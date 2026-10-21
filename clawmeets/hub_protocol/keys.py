@@ -9,15 +9,16 @@ PINNED_HUB_KEYS holds, per canonical hub URL, the keys a fresh deployment
 trusts before it has ever connected. Every other hub key is accepted only
 through a set signature by a key already trusted (``accept_key_set``).
 
-No real hub key exists yet. The default hub is pinned to a PLACEHOLDER that is
-provably unusable: the first ``sha256(b"clawmeets hub placeholder pin v1|" +
-str(i))`` whose 32 bytes do not decode to a point on Ed25519 (y < p, and
-(y^2 - 1) / (d*y^2 + 1) has no square root mod p). No private key can exist
-for it, and anyone can re-derive and check it
-(tests/hub_protocol/test_keys.py does, with integer arithmetic only). While
-only the placeholder is pinned, ``pins_are_placeholder`` is true and clients
-refuse to connect to that URL (status hub_untrusted): fail closed. The real
-public key replaces it before launch.
+The default hub is pinned to its real launch key, ``hub-2026-10``, exactly
+as hub.clawmeets.ai publishes it. Before launch it was pinned to a
+PLACEHOLDER that is provably unusable: the first ``sha256(b"clawmeets hub
+placeholder pin v1|" + str(i))`` whose 32 bytes do not decode to a point on
+Ed25519 (y < p, and (y^2 - 1) / (d*y^2 + 1) has no square root mod p). No
+private key can exist for it, and anyone can re-derive and check it
+(tests/hub_protocol/test_keys.py does, with integer arithmetic only). The
+rule stays: a URL pinned only to a placeholder kid makes
+``pins_are_placeholder`` true and clients refuse to connect to it (status
+hub_untrusted): fail closed. Tests pin the placeholder back in to check it.
 
 scripts/assert-no-hub-leak.py reads this file with ``ast`` and never executes
 it: every pinned key must stay an inline base64url string literal inside the
@@ -58,10 +59,10 @@ class PinnedKey:
 PINNED_HUB_KEYS: dict[str, tuple[PinnedKey, ...]] = {
     DEFAULT_HUB_URL: (
         PinnedKey(
-            kid="placeholder-v1",
-            pub="jCNDQJ0MiBUGgBrOfmQyjcbTCoe6M3F_Ezwd4M2J4gM",
-            not_before=0,
-            not_after=0,
+            kid="hub-2026-10",
+            pub="aAsxMGICemhaOqtji1VbFNtEC-_ZE0qw9wbD86Q7-YA",
+            not_before=1792567105,
+            not_after=1824103165,
         ),
     ),
 }
@@ -130,8 +131,8 @@ class TrustedKey:
         return cls(pub=b64url_decode(entry.pub, length=32), not_before=entry.not_before, not_after=entry.not_after)
 
 
-# True if every key pinned for url is a placeholder (no real hub key exists
-# yet). Later steps refuse to open a socket to that URL while this is true.
+# True if every key pinned for url is a placeholder (no real hub key is
+# pinned). Clients refuse to open a socket to that URL while this is true.
 # False for a URL with no pins at all (its key comes from configuration).
 def pins_are_placeholder(url: str) -> bool:
     pins = PINNED_HUB_KEYS.get(canonical_hub_url(url), ())
