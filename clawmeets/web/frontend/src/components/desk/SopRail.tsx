@@ -212,7 +212,7 @@ export default function SopRail({ onUseSop, onScheduleSop }: SopRailProps) {
                 disabled={searching}
                 onClick={() => toggle(sec.key)}
               >
-                {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 {sec.label}
                 <span className="todo-plate-c">{sec.sops.length}</span>
               </button>

@@ -978,11 +978,22 @@ body.todo-dragging { user-select: none; touch-action: none; -webkit-touch-callou
 
 .sop-title { font-size: 12.5px; font-weight: 800; color: var(--ink-1); letter-spacing: -0.005em; margin-bottom: 7px; text-wrap: pretty; }
 
-/* A library section heading doubles as its fold toggle. Same look as the
-   plain .todo-plate-h (Recently used), minus the button chrome. Disabled while
-   searching, when every section is forced open. */
-.sop-sec-h { width: calc(100% - 8px); background: none; border: 0; padding: 0; cursor: pointer; text-align: left; font-family: inherit; }
-.sop-sec-h:hover:not(:disabled) { color: var(--ink-2); }
+/* A library section heading doubles as its fold toggle. Drawn as a folder
+   row — bordered, full-size label, count as a pill on the right — rather than
+   the tiny .todo-plate-h caption (Recently used): folded, a caption-sized
+   heading read as a footnote, and the library looked like it held only the
+   recent SOPs. Disabled while searching, when every section is forced open. */
+.sop-sec-h {
+  display: flex; align-items: center; gap: 7px; width: calc(100% - 8px); margin: 10px 4px 4px; padding: 8px 10px;
+  background: #fff; border: 1px solid var(--line-2); border-radius: 9px; cursor: pointer; text-align: left;
+  font-family: inherit; font-size: 11.5px; font-weight: 800; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-1);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.sop-sec-h .todo-plate-c {
+  margin-left: auto; padding: 1px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; letter-spacing: 0;
+  background: var(--accent-softer); color: var(--accent-deep);
+}
+.sop-sec-h:hover:not(:disabled) { border-color: var(--line-strong); box-shadow: var(--shadow-1); }
 .sop-sec-h:disabled { cursor: default; }
 .sop-sec-h:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
