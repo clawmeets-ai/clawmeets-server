@@ -1,0 +1,44 @@
+{
+  // playwright-browser fingerprint overrides. ENTIRELY OPTIONAL — every key
+  // below already has a Cloudflare-resistant default baked into the CLI.
+  // Delete any key to accept its default; delete the whole file to accept all
+  // defaults. The `clawmeets browser ... --headed/--headless` flag overrides
+  // the `headless` value here.
+  //
+  // NOTE: the fingerprint keys (user_agent, locale, timezone_id, viewport_*,
+  // webgl_*) apply ONLY when running on stock Playwright. When the patchright
+  // stealth runtime is active they are intentionally ignored — patchright
+  // presents a coherent real-Chrome fingerprint and overriding it hurts. The
+  // `headless` and `proxy_*` keys apply to both runtimes.
+
+  // Run with a visible window (false) or headless (true). Headed is by far the
+  // most resistant to Cloudflare / bot detection and is the default. On a
+  // Linux server with no display, either set this to true OR run the CLI under
+  // `xvfb-run` (see SKILL.md) — no extra Python dependency is needed.
+  "headless": false,
+
+  // Browser identity. Keep these mutually consistent — a macOS user-agent, a
+  // US timezone, and an en-US locale all agree with each other. A mismatched
+  // trio (e.g. a macOS UA with a Tokyo timezone) is itself a bot signal.
+  "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "locale": "en-US",
+  "timezone_id": "America/New_York",
+
+  // Window size. 1440x900 is a common real-laptop viewport.
+  "viewport_width": 1440,
+  "viewport_height": 900,
+
+  // WebGL spoof — makes the GPU fingerprint look like real hardware instead of
+  // the headless ANGLE/SwiftShader renderer. The defaults below mimic an
+  // Apple-Silicon Mac; change them to match the machine you want to look like.
+  "webgl_vendor": "Google Inc. (Apple)",
+  "webgl_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+
+  // Optional proxy — only needed when a site blocks the runner's IP outright
+  // (a hard "access denied" / error 1020 with no solvable challenge), which
+  // usually means a datacenter/VPN IP. Point at a residential proxy. Leave the
+  // keys absent (as below) for a direct connection.
+  // "proxy_server": "http://host:port",      // or "socks5://host:port"
+  // "proxy_username": "user",
+  // "proxy_password": "pass"
+}

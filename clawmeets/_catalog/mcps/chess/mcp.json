@@ -1,0 +1,9 @@
+{
+  "launch": {
+    "command": "python",
+    "args": ["-m", "clawmeets.mcp.servers.chess_server"],
+    "env": {
+      "CLAWMEETS_CHESS_STATE_DIR": "{{token_path}}/.."
+    }
+  }
+}

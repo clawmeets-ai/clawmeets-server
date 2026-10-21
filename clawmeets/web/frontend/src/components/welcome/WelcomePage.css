@@ -1,0 +1,383 @@
+/* WelcomePage — the zero state.
+   Scoped under `.welcome-page` so nothing bleeds into the rest of the app.
+   Tokens (--accent, --ink-*, --line-*, …) come from styles/design/tokens.css,
+   imported globally.
+
+   The old file styled a four-step setup manual (numbered step headers, panels,
+   a tab strip). All of that is gone with the manual itself; what is left is one
+   column with four things in it — hero, command, narrative, checklist — and the
+   collapsed manual drawer, whose styles stay in RunnerSetup.css.
+
+   Layout note: the column is narrow (620px, vs. the old 980px) on purpose. The
+   widest thing on the page is one shell command, and a page that reads as a
+   single short column is the difference between "do this one thing" and "here
+   is a form". */
+
+.welcome-page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 56px 24px 96px;
+  display: flex;
+  justify-content: center;
+  font-family: var(--font-sans);
+  color: var(--ink-1);
+  background: var(--bg-canvas);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.welcome-page * { box-sizing: border-box; }
+.welcome-page button {
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+.zs { width: 100%; max-width: 620px; }
+
+/* ---------------- Hero ---------------- */
+
+.zs__hero { text-align: center; margin-bottom: 28px; }
+
+.zs__mark {
+  width: 40px; height: 40px;
+  display: block;
+  margin: 0 auto 16px;
+  filter: drop-shadow(0 4px 16px rgba(107, 42, 160, 0.22));
+}
+
+.zs__hero h1 {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 10px;
+  color: var(--ink-1);
+}
+
+/* The one sentence of mental model. Sized as body text rather than a caption:
+   it is the only explanation on the page and should not read as fine print. */
+.zs__model {
+  color: var(--ink-3);
+  font-size: 14px;
+  margin: 0 auto;
+  max-width: 460px;
+  line-height: 1.6;
+}
+
+/* ---------------- The command ---------------- */
+
+.zs__command { margin-bottom: 24px; }
+
+/* Folder tabs attached to the panel below them, so the command visibly sits
+   UNDER the selected OS rather than beside a floating segmented control.
+   Selectors are prefixed with `.welcome-page` because the page-wide
+   `.welcome-page button { padding: 0; background: none }` reset outranks a
+   bare `.zs__tab` and was flattening the tabs. */
+.zs__tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 12px;
+  position: relative;
+  z-index: 1;
+}
+.welcome-page .zs__tab {
+  padding: 9px 18px;
+  margin-bottom: -1px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink-3);
+  transition: color 120ms ease, background-color 120ms ease;
+}
+.welcome-page .zs__tab:hover { color: var(--ink-1); background: var(--bg-sidebar); }
+.welcome-page .zs__tab.is-active {
+  color: var(--accent);
+  background: #fff;
+  border-color: var(--line-2);
+  /* A 1px white bar covers the panel's top border under the active tab, so
+     tab and panel read as one surface. The accent bar on top marks the pick. */
+  box-shadow: inset 0 2px 0 var(--accent), 0 1px 0 #fff;
+}
+.welcome-page .zs__tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.zs__os-panel {
+  background: #fff;
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  padding: 18px 18px 16px;
+  box-shadow: 0 1px 3px rgba(31, 24, 38, 0.05);
+}
+.welcome-page .zs__command .rs__prereq { margin: 0 0 16px; }
+
+.zs__command-lead {
+  font-weight: 650;
+  color: var(--ink-2);
+  margin-bottom: 10px;
+}
+
+.zs__cmd {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  background: #1f1826;
+  border-radius: 10px;
+  padding: 14px 14px 14px 16px;
+  box-shadow: 0 6px 20px rgba(31, 24, 38, 0.18);
+}
+
+/* `white-space: pre` + horizontal scroll, never wrap: the command carries a
+   one-time token, so a line that reflowed would be unreadable and unverifiable
+   — and the user cannot eyeball a secret to check the copy worked. */
+.zs__cmd-pre {
+  flex: 1;
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #f4eefb;
+}
+
+.zs__cmd-pre code { font: inherit; color: inherit; }
+
+.zs__cmd-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #f4eefb;
+  background: rgba(255, 255, 255, 0.12);
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.zs__cmd-copy:hover { background: rgba(255, 255, 255, 0.2); }
+.zs__cmd-copy.is-copied { background: #2fbf5a; color: #0b2f18; }
+
+.zs__cmd--loading,
+.zs__cmd--error {
+  align-items: center;
+  gap: 10px;
+  color: #cdc2da;
+  font-size: 13px;
+  box-shadow: none;
+}
+
+.zs__retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #f4eefb;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.zs__retry:hover { background: rgba(255, 255, 255, 0.22); }
+
+.zs__command-note {
+  margin-top: 10px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* ---------------- The machine's narrative ---------------- */
+
+.zs__narrative {
+  border: 1px solid var(--line-1);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  background: var(--bg-card);
+}
+
+.zs__narrative-head {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 10px;
+}
+
+.zs__steps { list-style: none; margin: 0; padding: 0; }
+
+.zs__step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 3px 0;
+  font-size: 13px;
+  color: var(--ink-4);
+}
+
+.zs__step-mark {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1.5px solid var(--line-2, #e0d8ea);
+  color: #fff;
+}
+
+.zs__step.is-running { color: var(--ink-2); font-weight: 650; }
+.zs__step.is-running .zs__step-mark { border-color: var(--accent); color: var(--accent); }
+.zs__step.is-done { color: var(--ink-3); }
+.zs__step.is-done .zs__step-mark { background: #2fbf5a; border-color: #2fbf5a; }
+.zs__step.is-failed { color: #8c2f2f; font-weight: 650; }
+.zs__step.is-failed .zs__step-mark { border-color: #c0504d; background: #c0504d; }
+
+.zs__spin { animation: zs-spin 900ms linear infinite; }
+@keyframes zs-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .zs__spin { animation: none; }
+}
+
+.zs__failure {
+  margin-top: 12px;
+  padding: 11px 12px;
+  border-radius: 8px;
+  background: #fdf1f1;
+  border: 1px solid #f0d4d4;
+}
+
+.zs__failure-title {
+  font-size: 12.5px;
+  font-weight: 750;
+  color: #8c2f2f;
+  margin-bottom: 6px;
+}
+
+/* The machine's own error text, verbatim and scrollable. Not truncated: this is
+   the only place a user who closed the terminal can read why it stopped. */
+.zs__failure-detail {
+  margin: 0 0 8px;
+  padding: 8px 9px;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid #f0d4d4;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-x: auto;
+  max-height: 160px;
+}
+
+.zs__failure-hint { font-size: 12.5px; color: var(--ink-2); line-height: 1.55; }
+.zs__failure-hint code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px;
+  background: #fff;
+  border: 1px solid #f0d4d4;
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+/* ---------------- The checklist ---------------- */
+
+.zs__rows {
+  list-style: none;
+  margin: 0 0 24px;
+  padding: 0;
+  border: 1px solid var(--line-1);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-card);
+}
+
+.zs__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.zs__row:last-child { border-bottom: none; }
+
+/* A hollow ring for `waiting`, NOT a cross. A user who has not run the command
+   yet has done nothing wrong, and a first render full of red marks is a page
+   that opens by blaming them. */
+.zs__row-mark {
+  width: 19px; height: 19px;
+  border-radius: 50%;
+  border: 2px solid var(--line-2, #e0d8ea);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: #fff;
+}
+
+.zs__row-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.zs__row-label { font-weight: 650; color: var(--ink-3); }
+.zs__row-detail { font-size: 12.5px; color: var(--ink-3); line-height: 1.5; }
+
+.zs__row.is-done .zs__row-mark { background: #2fbf5a; border-color: #2fbf5a; }
+.zs__row.is-done .zs__row-label { color: var(--ink-1); }
+.zs__row.is-done .zs__row-detail { color: var(--ink-4); }
+
+.zs__row.is-problem .zs__row-mark { border-color: #d48a1c; background: #fbf0dc; }
+.zs__row.is-problem .zs__row-label { color: var(--ink-1); }
+.zs__row.is-problem .zs__row-detail { color: #8a5a00; }
+
+/* The state as a word, for screen readers only — the mark is decorative and a
+   colour difference is not an accessible status. */
+.zs__row-sr {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------------- Ready ---------------- */
+
+.zs__ready { text-align: center; margin-bottom: 28px; }
+
+.zs__ready-note {
+  color: var(--ink-3);
+  margin: 0 auto 18px;
+  max-width: 420px;
+  line-height: 1.6;
+}
+
+.zs__ready-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 20px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--ink-on-accent);
+  font-weight: 750;
+  text-decoration: none;
+  box-shadow: 0 4px 14px rgba(107, 42, 160, 0.26);
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.zs__ready-btn:hover { background: var(--accent-deep); }
+.zs__ready-btn:active { transform: translateY(1px); }

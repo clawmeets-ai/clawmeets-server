@@ -1,0 +1,42 @@
+[
+  {
+    "channel": "email",
+    "connection_enabled": true,
+    "connection_id": "conn-email",
+    "connection_removed": false,
+    "contact_id": "contact-email",
+    "contact_name": "Bea Email-Test",
+    "paused": false,
+    "project_id": "p-email"
+  },
+  {
+    "channel": "line",
+    "connection_enabled": true,
+    "connection_id": "conn-line",
+    "connection_removed": false,
+    "contact_id": "contact-line",
+    "contact_name": "LINE user \u00b7\u00b7\u00b7fcce",
+    "paused": false,
+    "project_id": "p-line"
+  },
+  {
+    "channel": "telegram",
+    "connection_enabled": true,
+    "connection_id": "conn-telegram",
+    "connection_removed": false,
+    "contact_id": "contact-telegram",
+    "contact_name": "Ana Telegram-Test",
+    "paused": false,
+    "project_id": "p-telegram"
+  },
+  {
+    "channel": "whatsapp",
+    "connection_enabled": true,
+    "connection_id": "conn-whatsapp",
+    "connection_removed": false,
+    "contact_id": "contact-whatsapp",
+    "contact_name": "Dara WhatsApp-Test",
+    "paused": false,
+    "project_id": "p-whatsapp"
+  }
+]

@@ -1,0 +1,147 @@
+/* Page chrome for /desk/briefings/:slug.
+   Imported by BriefingPage.tsx only, and deliberately NOT added to desk.css:
+   nothing on the desk uses these rules, and the whole point of this milestone
+   is that a briefing's own styling and the desk's stop sharing a stylesheet.
+
+   Everything here styles what is OUTSIDE the frame. There is no rule in this
+   file that reaches a briefing's document, and there cannot be — it renders
+   in a separate origin. */
+
+/* Full width of <main>, minus the gutter — no reading-measure cap.
+   A briefing is a dashboard, not an article: the documents that land here lay
+   out sidebars and multi-column card grids, and the old 980px cap squeezed
+   them into a column while the right third of a wide window sat empty.
+
+   This can only ever GRANT width. A document that sets its own max-width and
+   centres itself still does exactly that, inside a wider white card — the
+   frame is a separate origin and no rule in this file reaches into it. */
+.md-brief {
+  padding: 30px 32px 48px;
+}
+
+.md-brief-head {
+  margin-bottom: 20px;
+}
+
+.md-brief-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-3);
+  text-decoration: none;
+  transition: color var(--t-fast);
+}
+.md-brief-back:hover {
+  color: var(--accent-deep);
+}
+
+.md-brief-eyebrow {
+  margin-top: 14px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+
+.md-brief-title {
+  margin: 6px 0 10px;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--ink-1);
+}
+
+.md-brief-meta {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.md-brief-meta .mono {
+  font-family: var(--font-mono);
+}
+
+.md-brief-frame-wrap {
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  background: #fff;
+  overflow: hidden;
+}
+
+/* The frame's height is set inline from what the document reported, so there
+   is no height rule here to fight it. `display:block` kills the inline-element
+   descender gap that would otherwise leave a few stray pixels under every
+   briefing and read as a sizing bug. */
+.md-brief-frame {
+  display: block;
+  width: 100%;
+  border: 0;
+}
+
+/* The blessed AC-3.3 exception: when a document never reports, the frame stays
+   at its fallback height and keeps its own scrollbar — which the browser
+   supplies by itself, since the content is taller than the box — and this
+   notice says so, so it is a labelled failure rather than a clipped tail. */
+.md-brief-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-2);
+  background: #fdf5e6;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.md-brief-notice svg {
+  flex: none;
+  margin-top: 2px;
+  color: #b0761f;
+}
+
+.md-brief-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  background: #fff;
+}
+
+.md-brief-gone {
+  padding: 40px 24px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  background: #fff;
+  text-align: center;
+  font-size: 14px;
+  color: var(--ink-3);
+}
+.md-brief-gone p {
+  margin: 0 0 14px;
+}
+/* The status line under a load failure. Quieter than the sentence above it —
+   it is the diagnostic, not the message. */
+.md-brief-status {
+  font-size: 13px;
+  color: var(--ink-4, var(--ink-3));
+}
+.md-brief-retry {
+  display: inline-block;
+  margin: 0 0 14px;
+  padding: 6px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md, 6px);
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-2, var(--ink-3));
+  cursor: pointer;
+}
+.md-brief-retry:hover {
+  background: var(--bg-2, #f6f6f7);
+}

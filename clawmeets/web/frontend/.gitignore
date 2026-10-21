@@ -1,0 +1,6 @@
+# Build artifacts (`dist/` is also ignored by the repo-root .gitignore).
+dist/
+node_modules/
+coverage/
+dist-types/
+.design-sync-app.css

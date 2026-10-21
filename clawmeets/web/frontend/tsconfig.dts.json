@@ -1,0 +1,25 @@
+{
+  // Declaration-only build for /design-sync.
+  //
+  // The app build sets "noEmit": true, so nothing in this package ever produced
+  // a .d.ts tree — and the design-system converter derives every component's
+  // prop contract from exactly that tree. Without this, all 29 synced
+  // components ship `{ [key: string]: unknown }` and the design agent has to
+  // guess at every API.
+  //
+  // Emits types only: no JS, no effect on the app build, no runtime footprint.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist-types",
+    // Relaxed only for this pass: unused-symbol rules are a source-hygiene
+    // concern the app build already enforces, and they have no bearing on the
+    // shape of an emitted declaration.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": [".design-sync-entry.tsx", "src"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+}

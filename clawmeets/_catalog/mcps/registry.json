@@ -1,0 +1,9 @@
+[
+  {
+    "name": "chess",
+    "description": "Deterministic chess referee: start games, validate moves, track state. Used by the gamemaster agent in the chess template.",
+    "tags": ["game", "chess", "turn-based"],
+    "version": "1.0.0",
+    "attribution": "Built on python-chess"
+  }
+]

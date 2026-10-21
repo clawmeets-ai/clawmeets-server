@@ -1,0 +1,1276 @@
+# SPDX-License-Identifier: MIT
+"""
+clawmeets/models/user.py
+Human user implementation with Active Record persistence.
+
+Users create projects and communicate with their assistant.
+They don't auto-respond to messages - interaction happens via UI.
+
+All state is read from the passwd file - no in-memory state.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+import secrets
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
+
+import bcrypt
+
+from .participant import Participant, ParticipantRole
+from clawmeets.sync.changelog import is_contact_id
+from clawmeets.utils.file_io import FileUtil
+
+if TYPE_CHECKING:
+    from ..api.client import ClawMeetsClient
+    from .context import ModelContext
+    from .chat_message import ChatMessage
+
+logger = logging.getLogger("clawmeets.user")
+
+
+# Module-level lock for passwd file operations
+_passwd_lock = asyncio.Lock()
+
+
+# bcrypt digest of a 32-byte random secret, generated ONCE offline at cost 12;
+# the plaintext was discarded and never belonged to any account. It exists
+# solely so that the unknown-identifier and OAuth-only branches of
+# User.verify_credentials do the SAME bcrypt work as a real password check
+# (AUTH_CONTRACT §6.3) — without it, "no such user" answers measurably faster
+# than "wrong password" and the endpoint becomes an account-existence oracle.
+#
+# A SOURCE LITERAL, not bcrypt.hashpw(...) at import time: a cost-12 hash costs
+# ~250ms, and this module is imported by the server AND by every `clawmeets`
+# CLI invocation in the shipped runner wheel — a quarter-second added to every
+# command, to compute a value that never needs to vary. Committing it leaks
+# nothing: bcrypt is not reversible and the plaintext never existed as anyone's
+# password.
+#
+# Cost 12 must track bcrypt's gensalt() default or the dummy path stops
+# matching the real one. tests/test_auth_login_identifier.py compares this
+# literal's cost against a freshly generated live hash, so drift fails a test
+# rather than silently reopening the timing gap.
+_DUMMY_PASSWORD_HASH = "$2b$12$6.CEUQyzFfVgJcsot6UBY.Wk7ooPUDXlU98jkK.B3BlBcsMNb1TB2"
+
+
+# How an account's email address was proven (passwd field ``email_proven_by``).
+# A row with ``email_verified: true`` and no field predates it and counts as
+# EMAIL_PROOF_LINK. Only EMAIL_PROOF_TRUSTED_DOMAIN is not proof of mailbox
+# control: anyone may password-register any address in a trusted domain.
+EMAIL_PROOF_LINK = "link"                      # clicked the verification link
+EMAIL_PROOF_OAUTH = "oauth"                    # provisioned from a provider-verified email
+EMAIL_PROOF_TRUSTED_DOMAIN = "trusted_domain"  # CLAWMEETS_SIGNUP_TRUSTED_DOMAINS, no mail sent
+EMAIL_PROOF_OPERATOR = "operator"              # `clawmeets server admin` vouched for it
+EMAIL_PROOFS = (EMAIL_PROOF_LINK, EMAIL_PROOF_OAUTH, EMAIL_PROOF_TRUSTED_DOMAIN, EMAIL_PROOF_OPERATOR)
+
+# OAuth sign-in refused: its email matches an account whose own address was
+# never proven, so linking would hand that account to whoever registered it.
+EMAIL_UNPROVEN = "EMAIL_UNPROVEN"
+
+
+class OAuthProvisionError(Exception):
+    """Raised by ``User.oauth_authenticate_or_provision`` when an OAuth sign-in
+    is refused.
+
+    Carries a stable error ``code``: an invite code (``INVITE_REQUIRED`` /
+    ``INVITE_MALFORMED`` / ``INVITE_NOT_FOUND`` / ``INVITE_ALREADY_REDEEMED`` /
+    ``INVITE_EXPIRED`` / ``INVITE_REVOKED``), ``SIGNUP_CLOSED``, or
+    ``EMAIL_UNPROVEN``. The OAuth-login router maps this to the ported error
+    envelope — the model stays free of any server-layer import (Layer 1 models
+    must not depend on Layer 2 server code).
+    """
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+@dataclass
+class NotificationConfig:
+    """Configuration for user notification scripts."""
+    script_path: str
+    timeout: float = 30.0
+    fail_fast: bool = False
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+class User(Participant):
+    """
+    Human user - creates projects, communicates with assistant.
+
+    Users interact via the UI/API, not via automated responses.
+    The on_message handler is primarily for UI notifications.
+
+    All state is read from the passwd file on each property access.
+    This ensures the model always reflects the current state on disk.
+    """
+
+    # Short names are reserved for operator-created accounts
+    # (``clawmeets admin create-user`` on the server host); public
+    # self-registration enforces this minimum.
+    MIN_PUBLIC_USERNAME_LENGTH = 5
+
+    # password_hash value for OAuth-only accounts (no password login). bcrypt's
+    # checkpw never matches this sentinel, so verify_password always fails for
+    # such accounts — they authenticate exclusively through the OAuth flow.
+    OAUTH_PASSWORD_SENTINEL = "!oauth"
+
+    _EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+
+    def __init__(
+        self,
+        id: str,
+        model_ctx: "ModelContext",
+    ) -> None:
+        """Initialize a User.
+
+        Args:
+            id: The user's unique identifier
+            model_ctx: ModelContext for filesystem access (may include client)
+        """
+        super().__init__()
+        self._id = id
+        self._model_ctx = model_ctx
+        self._notification_config: Optional[NotificationConfig] = None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Static Helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _passwd_path(ctx: "ModelContext") -> Path:
+        """Get path to passwd file.
+
+        Args:
+            ctx: ModelContext for path resolution
+
+        Returns:
+            Path to passwd file
+        """
+        return ctx.participants_dir / "passwd"
+
+    @staticmethod
+    def _validate_username(username: str) -> str:
+        """Validate a username. Returns it unchanged; rejects what it dislikes.
+
+        Usernames must be lowercase. The rule REJECTS rather than canonicalizes:
+        quietly storing ``alice`` for someone who typed ``Alice`` renames their
+        account behind their back and they only find out much later, whereas an
+        error at sign-up is the one moment they can still choose differently.
+
+        The lowercase rule lives here, NOT in ``FileUtil.validate_fs_name``,
+        which deliberately still permits ``A-Z``. That validator is shared by
+        project names, chatroom names, agent names, knowledge-pack names and
+        every integration mailbox/calendar/drive name; tightening it to satisfy
+        usernames would invalidate existing names across all of them.
+
+        This constrains what may be STORED, not what may be TYPED — sign-in
+        lookup stays case-insensitive (see :meth:`get_by_username`), so users
+        who learned their name as ``Alice`` still sign in with ``Alice``.
+
+        Args:
+            username: The username to validate
+
+        Returns:
+            The username unchanged, if valid
+
+        Raises:
+            ValueError: If username is invalid
+        """
+        # Charset/length/reserved-name gate first, so anything reaching the
+        # rules below is already ASCII and bounded at MAX_FS_NAME_LENGTH.
+        username = FileUtil.validate_fs_name(username)
+        if "-" in username:
+            raise ValueError("Username cannot contain hyphens (-). Use underscores (_) instead.")
+        if username != username.lower():
+            raise ValueError(
+                f"Username must be lowercase. Use '{username.lower()}' instead of '{username}'."
+            )
+        return username
+
+    @staticmethod
+    def validate_email(email: str) -> str:
+        """Validate and normalize an email address.
+
+        Args:
+            email: The email to validate
+
+        Returns:
+            Normalized email (lowercase, stripped)
+
+        Raises:
+            ValueError: If email format is invalid
+        """
+        email = email.strip().lower()
+        if not email:
+            raise ValueError("Email cannot be empty")
+        if len(email) > 254:
+            raise ValueError("Email address too long")
+        if not User._EMAIL_PATTERN.match(email):
+            raise ValueError(f"Invalid email format: {email}")
+        return email
+
+    @staticmethod
+    def _is_email_identifier(identifier: str) -> bool:
+        """True iff a sign-in identifier should be resolved as an email.
+
+        Reuses ``_EMAIL_PATTERN`` — one regex, one notion of "email"
+        (AUTH_CONTRACT §6.1). Usernames cannot contain ``@`` (enforced by
+        ``_validate_username`` -> ``FileUtil.validate_fs_name``) and every email
+        must, so the two namespaces are provably disjoint and this branch can
+        never send a valid username down the email path.
+
+        A string that is neither — ``"!!!"``, ``"a@b"`` — is NOT an error: it
+        falls to the username branch, finds nothing, and gets the same 401 as a
+        wrong password. Rejecting it earlier would be a shape oracle.
+
+        Assumes the caller has already stripped.
+        """
+        return bool(User._EMAIL_PATTERN.match(identifier))
+
+    @staticmethod
+    def _hash_password(password: str) -> str:
+        """Hash a password using bcrypt."""
+        return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+    @staticmethod
+    def _verify_password_hash(password: str, password_hash: str) -> bool:
+        """Verify a password against its hash."""
+        try:
+            return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+        except Exception:
+            return False
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Passwd File I/O
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _load_passwd(self) -> dict:
+        """Load the passwd file, returning empty structure if doesn't exist."""
+        passwd_path = self._passwd_path(self._model_ctx)
+        data = FileUtil.read(passwd_path, "json", default=None)
+        return data if data is not None else {"users": {}}
+
+    def _save_passwd(self, data: dict) -> None:
+        """Save the passwd file atomically."""
+        passwd_path = self._passwd_path(self._model_ctx)
+        FileUtil.write(passwd_path, data, "json", atomic=True)
+
+    def _load_passwd_entry(self) -> dict:
+        """Load this user's entry from passwd file.
+
+        Returns:
+            Dict of user data, or empty dict if not found
+        """
+        data = self._load_passwd()
+        users = data.get("users", {})
+        return users.get(self._id, {})
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Active Record Class Methods
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def get(cls, user_id: str, ctx: "ModelContext") -> Optional["User"]:
+        """Load user by ID from passwd file.
+
+        Args:
+            user_id: The user ID
+            ctx: ModelContext for filesystem operations
+
+        Returns:
+            User instance or None if not found
+        """
+        user = cls(user_id, ctx)
+        if not user.exists():
+            return None
+        return user
+
+    @classmethod
+    def get_by_username(cls, username: str, ctx: "ModelContext") -> Optional["User"]:
+        """Load user by username (case-insensitive on BOTH sides).
+
+        This lowercases the stored value as well as the needle. It used to
+        lowercase only the needle and compare against ``user_data["username"]``
+        verbatim, so any account whose stored username carried an uppercase
+        letter was unreachable by every caller of this method — login, password
+        change, participant resolution, and ``register``'s uniqueness check
+        (which meant ``alice`` could be registered alongside an existing
+        ``Alice``). ``get_by_email`` always did it correctly; this now matches.
+
+        Registration refuses uppercase usernames (see ``_validate_username``),
+        so new records are lowercase anyway — but what users may TYPE stays
+        case-insensitive, which is what this method governs.
+
+        Args:
+            username: The username to find
+            ctx: ModelContext for filesystem operations
+
+        Returns:
+            User instance or None if not found
+        """
+        username = username.lower().strip()
+        passwd_path = cls._passwd_path(ctx)
+        data = FileUtil.read(passwd_path, "json", default=None)
+        if data is None:
+            return None
+
+        users = data.get("users", {})
+        for user_id, user_data in users.items():
+            if (user_data.get("username") or "").lower() == username:
+                return cls(user_id, ctx)
+        return None
+
+    @classmethod
+    def list_all(cls, ctx: "ModelContext") -> list["User"]:
+        """List all users.
+
+        Args:
+            ctx: ModelContext for filesystem operations
+
+        Returns:
+            List of User instances
+        """
+        passwd_path = cls._passwd_path(ctx)
+        data = FileUtil.read(passwd_path, "json", default=None)
+        if data is None:
+            return []
+
+        users = data.get("users", {})
+        return [cls(user_id, ctx) for user_id in users.keys()]
+
+    @classmethod
+    def list_all_entries(cls, ctx: "ModelContext") -> dict[str, dict]:
+        """Raw passwd rows, ``user_id -> entry``, from ONE file read.
+
+        The bulk-read counterpart to :meth:`list_all`. Every ``User`` property
+        calls :meth:`_load_passwd_entry`, which re-reads and re-parses the whole
+        passwd file — so a caller that builds N rows by touching K properties
+        each performs N*K full parses. Callers that need many fields for many
+        users (exports) should read the dicts once through this
+        method and never touch a ``User`` instance property in the loop.
+
+        Keys are the same as :meth:`to_dict`'s source entry: ``username``,
+        ``email``, ``email_verified``, ``created_at``, ``role``,
+        ``display_name``, ``assistant_agent_id``, ``oauth_identities``.
+
+        Args:
+            ctx: ModelContext for filesystem operations
+
+        Returns:
+            ``{user_id: passwd_entry}``; empty dict when no passwd file exists.
+        """
+        data = FileUtil.read(cls._passwd_path(ctx), "json", default=None)
+        if data is None:
+            return {}
+        return data.get("users", {}) or {}
+
+    @classmethod
+    def get_by_email(cls, email: str, ctx: "ModelContext") -> Optional["User"]:
+        """Load user by email address (case-insensitive).
+
+        Args:
+            email: The email to find
+            ctx: ModelContext for filesystem operations
+
+        Returns:
+            User instance or None if not found
+        """
+        email = email.strip().lower()
+        passwd_path = cls._passwd_path(ctx)
+        data = FileUtil.read(passwd_path, "json", default=None)
+        if data is None:
+            return None
+
+        users = data.get("users", {})
+        for user_id, user_data in users.items():
+            if user_data.get("email", "").lower() == email:
+                return cls(user_id, ctx)
+        return None
+
+    @classmethod
+    async def verify_email(cls, token: str, ctx: "ModelContext") -> Optional["User"]:
+        """Verify a user's email using the verification token.
+
+        Args:
+            token: The verification token from the email link
+            ctx: ModelContext for filesystem operations
+
+        Returns:
+            User instance if token is valid, None otherwise
+        """
+        async with _passwd_lock:
+            passwd_path = cls._passwd_path(ctx)
+            data = FileUtil.read(passwd_path, "json", default=None)
+            if data is None:
+                return None
+
+            users = data.get("users", {})
+            for user_id, user_data in users.items():
+                if user_data.get("verification_token") == token:
+                    user_data["email_verified"] = True
+                    # Upgrades a trusted_domain account: the holder proved it now.
+                    user_data["email_proven_by"] = EMAIL_PROOF_LINK
+                    user_data["verification_token"] = None
+                    data["users"] = users
+                    FileUtil.write(passwd_path, data, "json", atomic=True)
+                    return cls(user_id, ctx)
+
+            return None
+
+    @classmethod
+    async def register(
+        cls,
+        username: str,
+        password: str,
+        ctx: "ModelContext",
+        email: Optional[str] = None,
+        email_verified: bool = False,
+        email_proven_by: Optional[str] = None,
+    ) -> "User":
+        """Create a new user.
+
+        Args:
+            username: The username (will be normalized)
+            password: The password (will be hashed)
+            ctx: ModelContext for filesystem operations
+            email: Email address (required for self-registration)
+            email_verified: Whether email is pre-verified (True for operator-created users)
+            email_proven_by: How a pre-verified email was proven, one of
+                ``EMAIL_PROOFS``. Every production caller passes it; left unset
+                the row reads like a legacy verified account (proven). Ignored
+                when ``email_verified`` is False.
+
+        Returns:
+            New User instance
+
+        Raises:
+            ValueError: If username is invalid or already exists, or email already registered
+        """
+        username = cls._validate_username(username)
+        if email_proven_by is not None and email_proven_by not in EMAIL_PROOFS:
+            raise ValueError(f"email_proven_by must be one of {EMAIL_PROOFS}")
+
+        async with _passwd_lock:
+            passwd_path = cls._passwd_path(ctx)
+
+            # Load existing data
+            data = FileUtil.read(passwd_path, "json", default=None)
+            if data is None:
+                data = {"users": {}}
+
+            users = data.get("users", {})
+
+            # Check username uniqueness across all participant types
+            from .participant import Participant
+
+            if Participant.get_by_name(username, ctx) is not None:
+                raise ValueError(f"Username '{username}' already registered")
+
+            # Check email uniqueness (if email provided)
+            if email:
+                email = email.strip().lower()
+                for user_data in users.values():
+                    if user_data.get("email", "").lower() == email:
+                        raise ValueError(f"Email '{email}' already registered")
+
+            user_id = str(uuid.uuid4())
+            entry = {
+                "id": user_id,
+                "username": username,
+                # Legacy passwd field, kept for file-format compatibility.
+                # Nothing reads it; every account is a regular user.
+                "role": "user",
+                "password_hash": cls._hash_password(password),
+                "created_at": _now().isoformat(),
+                "email": email,
+                "email_verified": email_verified,
+                "email_proven_by": email_proven_by if email_verified else None,
+                # A trusted-domain account keeps a token: clicking its link is
+                # how the holder later proves the address (see verify_email).
+                "verification_token": (
+                    None if email_verified and email_proven_by != EMAIL_PROOF_TRUSTED_DOMAIN
+                    else secrets.token_urlsafe(32)
+                ),
+            }
+            users[user_id] = entry
+            data["users"] = users
+
+            # Save atomically
+            FileUtil.write(passwd_path, data, "json", atomic=True)
+
+            return cls(user_id, ctx)
+
+    @classmethod
+    async def verify_credentials(
+        cls,
+        identifier: str,
+        password: str,
+        ctx: "ModelContext",
+    ) -> Optional["User"]:
+        """Resolve a username OR an email to a user and check its password.
+
+        THE credential path for ``POST /auth/login`` (AUTH_CONTRACT §6). A
+        ``None`` return never distinguishes "no such account" from "wrong
+        password" — the caller cannot tell them apart, by construction, and
+        neither can anyone timing the response.
+
+        Steps, in this order:
+
+        1. ``identifier.strip()``. ``password`` is NOT stripped — leading and
+           trailing whitespace in a password is significant (§2.2).
+        2. EXACTLY ONE lookup, chosen by :meth:`_is_email_identifier`: email
+           shaped -> :meth:`get_by_email`, otherwise -> :meth:`get_by_username`.
+           Never both, never "try one then fall back to the other" (§6.1).
+           Both lookups are case-insensitive on both sides (§6.2).
+        3. Pick the hash to verify against:
+
+           - no user found                  -> ``_DUMMY_PASSWORD_HASH``
+           - ``OAUTH_PASSWORD_SENTINEL``    -> ``_DUMMY_PASSWORD_HASH``
+           - missing/empty stored hash      -> ``_DUMMY_PASSWORD_HASH``
+           - otherwise                      -> the stored hash
+
+           The OAuth-only row matters: ``checkpw`` against ``"!oauth"`` fails
+           in microseconds because the string is not a valid bcrypt digest, so
+           short-circuiting it — or letting it through — would be its own
+           timing signature (§6.3).
+        4. Call ``_verify_password_hash`` EXACTLY ONCE, unconditionally. There
+           is no ``return`` anywhere between step 1 and this call, on any
+           branch. That absence is the entire point of this method.
+        5. Return the user iff a user was found AND the check passed.
+
+        Deliberately does NOT check ``email_verified``. That is the caller's,
+        and it MUST happen after this returns a user: the 403 is only not an
+        enumeration oracle because it is unreachable until the password has
+        already proven correct (§4.2).
+
+        Args:
+            identifier: A username or an email address, as typed
+            password: The password to verify, exactly as sent
+            ctx: ModelContext for filesystem operations
+
+        Returns:
+            User instance if the credentials are valid, None otherwise
+        """
+        identifier = (identifier or "").strip()
+
+        if cls._is_email_identifier(identifier):
+            user = cls.get_by_email(identifier, ctx)
+        else:
+            user = cls.get_by_username(identifier, ctx)
+
+        password_hash = _DUMMY_PASSWORD_HASH
+        if user is not None:
+            stored = user._load_passwd_entry().get("password_hash") or ""
+            if stored and stored != cls.OAUTH_PASSWORD_SENTINEL:
+                password_hash = stored
+
+        # The one bcrypt bar every path crosses. Do not guard this call.
+        verified = cls._verify_password_hash(password, password_hash)
+
+        if user is not None and verified:
+            return user
+        return None
+
+    @classmethod
+    async def verify_password(
+        cls,
+        username: str,
+        password: str,
+        ctx: "ModelContext",
+    ) -> Optional["User"]:
+        """Verify username/password and return user if valid.
+
+        NOT the sign-in path. ``POST /auth/login`` goes through
+        :meth:`verify_credentials`; the only caller left here is
+        ``POST /auth/change-password``, an authenticated re-check of your own
+        password. See the note on the early return below before adding a
+        caller.
+
+        Case-insensitive on BOTH sides, same fix as :meth:`get_by_username` —
+        before it, ``/auth/change-password`` answered "Current password is
+        incorrect" to the CORRECT password for any account stored with an
+        uppercase letter.
+
+        Args:
+            username: The username
+            password: The password to verify
+            ctx: ModelContext for filesystem operations
+
+        Returns:
+            User instance if valid, None otherwise
+        """
+        username = username.lower().strip()
+        passwd_path = cls._passwd_path(ctx)
+        data = FileUtil.read(passwd_path, "json", default=None)
+        if data is None:
+            return None
+
+        users = data.get("users", {})
+        for user_id, user_data in users.items():
+            if (user_data.get("username") or "").lower() == username:
+                if cls._verify_password_hash(password, user_data.get("password_hash", "")):
+                    return cls(user_id, ctx)
+                # Wrong password. This returns WITHOUT the constant-work bcrypt
+                # pass that AUTH_CONTRACT §6.3 mandates for sign-in — and that
+                # is safe HERE, and only here, because of who calls this method:
+                #
+                #   /auth/change-password already holds a valid access token for
+                #   this very account, so "does this account exist" is not a
+                #   secret it could leak. There is no existence oracle to close,
+                #   and forcing a dummy bcrypt pass would cost that endpoint
+                #   ~250ms on the wrong-password branch to hide nothing.
+                #
+                # The safety is a property of the CALL GRAPH, not of this
+                # function. Route /auth/login (or any other unauthenticated
+                # caller) back through here and this line becomes the timing
+                # oracle it used to be. Unauthenticated credential checks belong
+                # in verify_credentials, which has no early return before the
+                # hash step on any branch.
+                return None
+        # User not found — same reasoning; the caller is already authenticated.
+        return None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # OAuth invite-login (additive — password auth untouched)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def get_by_oauth_identity(
+        cls, provider: str, subject: str, ctx: "ModelContext",
+    ) -> Optional["User"]:
+        """Find a user by a linked (provider, provider_subject). None if unlinked."""
+        passwd_path = cls._passwd_path(ctx)
+        data = FileUtil.read(passwd_path, "json", default=None)
+        if data is None:
+            return None
+        for user_id, rec in data.get("users", {}).items():
+            for ident in rec.get("oauth_identities", []) or []:
+                if ident.get("provider") == provider and ident.get("provider_subject") == subject:
+                    return cls(user_id, ctx)
+        return None
+
+    @classmethod
+    def _unique_oauth_username(cls, users: dict, email: str, ctx: "ModelContext") -> str:
+        """Derive a unique username from an email local-part (sanitized to
+        ``[0-9a-z]``, numeric suffix on collision). Checked against BOTH existing
+        passwd usernames and every other participant type (agents/assistants), so
+        a provisioned account never collides with an agent name. Deterministic and
+        bounded; only cosmetic on collision.
+        """
+        from .participant import Participant
+
+        base = re.sub(r"[^0-9a-z]", "", email.split("@", 1)[0].lower()) or "user"
+        taken = {r.get("username") for r in users.values()}
+        candidate = base
+        n = 1
+        while candidate in taken or Participant.get_by_name(candidate, ctx) is not None:
+            n += 1
+            candidate = f"{base}{n}"
+        return candidate
+
+    @classmethod
+    def _resolve_oauth_username(
+        cls, users: dict, email: str, desired: Optional[str], ctx: "ModelContext"
+    ) -> str:
+        """Pick the username for a freshly provisioned OAuth account.
+
+        Prefer ``desired`` (the slug chosen in the sign-up flow) when it passes
+        the same rules public registration enforces — minimum length +
+        ``_validate_username`` — and is free across all participant types. On any
+        failure (too short, invalid chars, taken, or absent) fall back to
+        ``_unique_oauth_username`` so the callback never fails on a username.
+
+        ``desired`` is lowercased here, at the call site, because usernames must
+        be lowercase (``_validate_username``) and this is the one in-repo caller
+        that could hand the rule a mixed-case name. It is the OAuth CALLBACK —
+        there is no response to show an error in and no form to send anyone back
+        to, so the alternative is not "reject" but "silently fall back to an
+        email-derived name", which discards the slug the user actually chose.
+        Lowercasing keeps their choice. The rule stays strict; the caller adapts.
+        The password sign-up path does NOT do this — it rejects, because it can.
+        """
+        from .participant import Participant
+
+        if desired and desired.strip():
+            candidate = desired.strip().lower()
+            if len(candidate) >= cls.MIN_PUBLIC_USERNAME_LENGTH:
+                try:
+                    normalized = cls._validate_username(candidate)
+                except ValueError:
+                    normalized = None
+                if normalized is not None:
+                    taken = {r.get("username") for r in users.values()}
+                    if normalized not in taken and Participant.get_by_name(normalized, ctx) is None:
+                        return normalized
+        return cls._unique_oauth_username(users, email, ctx)
+
+    @staticmethod
+    def _email_proven(rec: dict) -> bool:
+        """True when a passwd row's email was proven by the address's holder:
+        verified, by anything but a trusted-domain pre-verification. A verified
+        row with no ``email_proven_by`` predates the field and counts as a link."""
+        if not rec.get("email_verified"):
+            return False
+        return (rec.get("email_proven_by") or EMAIL_PROOF_LINK) != EMAIL_PROOF_TRUSTED_DOMAIN
+
+    @classmethod
+    async def oauth_authenticate_or_provision(
+        cls,
+        *,
+        provider: str,
+        provider_subject: str,
+        verified_email: str,
+        display_name: Optional[str],
+        avatar_url: Optional[str],
+        invite_code: Optional[str],
+        ctx: "ModelContext",
+        desired_username: Optional[str] = None,
+        admit: Optional[Callable[[Optional[str], str], Awaitable[None]]] = None,
+    ) -> tuple["User", str]:
+        """THE account decision for an OAuth callback, under ``_passwd_lock``.
+
+        Order (returns ``(user, outcome)`` where outcome in login/linked/created):
+          1) (provider, subject) already linked          -> ("login")   invite untouched
+          2) else verified email matches an account:
+               that account's email is proven             -> link identity, ("linked")  invite untouched
+               otherwise                                  -> OAuthProvisionError(EMAIL_UNPROVEN)
+             Proven = ``email_verified`` AND ``email_proven_by`` is not
+             ``trusted_domain`` (a verified row without the field is legacy and
+             counts as a link click). An unverified or trusted-domain row says
+             nothing about who holds the mailbox — an insider can
+             password-register ``victim@corp.com`` — so linking would sign the
+             real owner in to the registrant's account. Never falls through to
+             3): that would create a second account with the same email.
+          3) else NEW account -> ``admit(invite_code, username)``, which raises
+             OAuthProvisionError to refuse. The route injects the server's sign-up
+             policy (server/signup_policy.py); without one, an invite is REQUIRED:
+               invitation_code.redeem(code, ...) not None  -> OAuthProvisionError(that code)
+                 (INVITE_REQUIRED / a classify() code / INVITE_ALREADY_REDEEMED)
+               admitted -> provision record (password_hash=OAUTH_PASSWORD_SENTINEL,
+                          email_verified=True, oauth_identities=[identity]) -> ("created")
+                          The provisioned username is ``desired_username`` when valid
+                          + free, else an email-derived fallback (never fails here).
+
+        Consume-then-create mirrors the existing ``/auth/register`` ordering: a
+        crash between consume and write wastes one use of a (multi-use) code —
+        identical to today's password register. Only VERIFIED provider emails
+        reach here, so provisioned accounts are pre-verified.
+        """
+        from .invitation_code import redeem
+
+        if admit is None:
+            async def admit(code: Optional[str], username: str) -> None:
+                err = await redeem(code, ctx.participants_dir, username)
+                if err is not None:
+                    raise OAuthProvisionError(err)
+
+        email = (verified_email or "").strip().lower()
+        async with _passwd_lock:
+            passwd_path = cls._passwd_path(ctx)
+            data = FileUtil.read(passwd_path, "json", default=None)
+            if data is None:
+                data = {"users": {}}
+            users = data.get("users", {})
+
+            # 1) already linked by (provider, subject) -> login (invite untouched)
+            for user_id, rec in users.items():
+                for ident in rec.get("oauth_identities", []) or []:
+                    if (ident.get("provider") == provider
+                            and ident.get("provider_subject") == provider_subject):
+                        return cls(user_id, ctx), "login"
+
+            # 2) verified email matches an existing account -> link (invite
+            #    untouched), only when that account proved the address itself.
+            for user_id, rec in users.items():
+                if (rec.get("email") or "").strip().lower() == email:
+                    if not cls._email_proven(rec):
+                        raise OAuthProvisionError(EMAIL_UNPROVEN)
+                    idents = rec.setdefault("oauth_identities", [])
+                    idents.append({
+                        "provider": provider,
+                        "provider_subject": provider_subject,
+                        "verified_email": email,
+                    })
+                    # Backfill optional profile fields only when currently absent.
+                    if not rec.get("display_name") and display_name:
+                        rec["display_name"] = display_name
+                    if not rec.get("avatar_url") and avatar_url:
+                        rec["avatar_url"] = avatar_url
+                    data["users"] = users
+                    FileUtil.write(passwd_path, data, "json", atomic=True)
+                    return cls(user_id, ctx), "linked"
+
+            # 3) NEW account -> the sign-up gate decides
+            # Honor the slug the user picked in the sign-up flow when it's valid
+            # and free; otherwise fall back to an email-derived unique name so a
+            # taken/invalid/omitted username never fails the OAuth callback.
+            username = cls._resolve_oauth_username(users, email, desired_username, ctx)
+            # In invite mode this consumes a use (multi-use semantics preserved),
+            # re-checking redeemability under invitation_code's own lock.
+            await admit(invite_code, username)
+
+            user_id = str(uuid.uuid4())
+            users[user_id] = {
+                "id": user_id,
+                "username": username,
+                "role": "user",
+                "password_hash": cls.OAUTH_PASSWORD_SENTINEL,
+                "created_at": _now().isoformat(),
+                "email": email,
+                "email_verified": True,          # only verified provider emails reach here
+                "email_proven_by": EMAIL_PROOF_OAUTH,
+                "verification_token": None,
+                "display_name": display_name,
+                "avatar_url": avatar_url,
+                "oauth_identities": [{
+                    "provider": provider,
+                    "provider_subject": provider_subject,
+                    "verified_email": email,
+                }],
+            }
+            data["users"] = users
+            FileUtil.write(passwd_path, data, "json", atomic=True)
+            return cls(user_id, ctx), "created"
+
+    @classmethod
+    async def initialize(cls, ctx: "ModelContext") -> None:
+        """Initialize user store, ensuring passwd file exists.
+
+        Args:
+            ctx: ModelContext for filesystem operations
+        """
+        async with _passwd_lock:
+            passwd_path = cls._passwd_path(ctx)
+
+            # Load existing data
+            data = FileUtil.read(passwd_path, "json", default=None)
+            if data is None:
+                data = {"users": {}}
+                FileUtil.write(passwd_path, data, "json", atomic=True)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Instance Properties
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @property
+    def id(self) -> str:
+        return self._id
+
+    @property
+    def name(self) -> str:
+        """Get username from filesystem."""
+        return self._load_passwd_entry().get("username", "")
+
+    @property
+    def username(self) -> str:
+        """Alias for name - users have usernames."""
+        return self.name
+
+    @property
+    def role(self) -> ParticipantRole:
+        return ParticipantRole.USER
+
+    @property
+    def assistant_id(self) -> Optional[str]:
+        """The ID of this user's linked assistant (from filesystem)."""
+        return self._load_passwd_entry().get("assistant_agent_id")
+
+    @property
+    def created_at(self) -> Optional[datetime]:
+        """Get creation time from filesystem."""
+        ts = self._load_passwd_entry().get("created_at")
+        if ts:
+            try:
+                return datetime.fromisoformat(ts)
+            except ValueError:
+                pass
+        return None
+
+    @property
+    def has_assistant(self) -> bool:
+        """Check if user has a linked assistant."""
+        return self.assistant_id is not None
+
+    @property
+    def email(self) -> Optional[str]:
+        """Get email from filesystem."""
+        return self._load_passwd_entry().get("email")
+
+    @property
+    def email_verified(self) -> bool:
+        """Check if user's email is verified."""
+        return self._load_passwd_entry().get("email_verified", False)
+
+    @property
+    def email_proven(self) -> bool:
+        """Verified by the address's own holder (see ``_email_proven``). False
+        for a trusted-domain pre-verified account until its link is clicked."""
+        return self._email_proven(self._load_passwd_entry())
+
+    @property
+    def verification_token(self) -> Optional[str]:
+        """Get verification token (None if already verified)."""
+        return self._load_passwd_entry().get("verification_token")
+
+    @property
+    def oauth_identities(self) -> list[dict]:
+        """Linked OAuth identities ([] on legacy/password-only records)."""
+        return self._load_passwd_entry().get("oauth_identities", []) or []
+
+    @property
+    def display_name(self) -> Optional[str]:
+        """OAuth profile display name (None if absent)."""
+        return self._load_passwd_entry().get("display_name")
+
+    @property
+    def avatar_url(self) -> Optional[str]:
+        """OAuth profile avatar URL (None if absent)."""
+        return self._load_passwd_entry().get("avatar_url")
+
+    @property
+    def description(self) -> str:
+        """Users don't have descriptions."""
+        return ""
+
+    def get_project(self, project_id: str):
+        """Load a project by ID.
+
+        Args:
+            project_id: The project ID
+
+        Returns:
+            Project or None if not found
+        """
+        from .project import Project
+        return Project.get(project_id, self._model_ctx)
+
+    def set_notification_config(self, config: NotificationConfig) -> None:
+        """Set notification configuration for message callbacks.
+
+        Args:
+            config: NotificationConfig with script path and settings
+        """
+        self._notification_config = config
+
+    def exists(self) -> bool:
+        """Check if user exists in passwd file."""
+        return bool(self._load_passwd_entry())
+
+    def update_card(self, **fields) -> None:
+        """No-op for User - users don't have card.json."""
+        pass
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Instance Methods
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def change_password(self, new_password: str) -> None:
+        """Change this user's password.
+
+        Args:
+            new_password: The new password
+        """
+        async with _passwd_lock:
+            data = self._load_passwd()
+            users = data.get("users", {})
+            if self._id not in users:
+                raise KeyError(f"User {self._id!r} not found")
+            users[self._id]["password_hash"] = self._hash_password(new_password)
+            data["users"] = users
+            self._save_passwd(data)
+
+    async def set_email_verified(self, verified: bool, *, proven_by: Optional[str] = None) -> None:
+        """Set email verification status.
+
+        Args:
+            verified: Whether email is verified
+            proven_by: How it was proven, one of ``EMAIL_PROOFS``. Left unset,
+                a recorded proof is kept as is (so this never silently upgrades
+                a ``trusted_domain`` account). Clearing verification clears it.
+        """
+        if proven_by is not None and proven_by not in EMAIL_PROOFS:
+            raise ValueError(f"proven_by must be one of {EMAIL_PROOFS}")
+        async with _passwd_lock:
+            data = self._load_passwd()
+            users = data.get("users", {})
+            if self._id not in users:
+                raise KeyError(f"User {self._id!r} not found")
+            users[self._id]["email_verified"] = verified
+            if not verified:
+                users[self._id]["email_proven_by"] = None
+            elif proven_by is not None:
+                users[self._id]["email_proven_by"] = proven_by
+            if verified:
+                users[self._id]["verification_token"] = None
+            data["users"] = users
+            self._save_passwd(data)
+
+    def desk_tour_seen_at(self) -> Optional[str]:
+        """When this account first closed the My Desk welcome tour, or None.
+
+        Kept on the passwd row rather than in the browser so "seen" follows
+        the account to every device — a second laptop must not replay the
+        tour to someone who already dismissed it.
+        """
+        return self._load_passwd_entry().get("desk_tour_seen_at")
+
+    async def mark_desk_tour_seen(self) -> str:
+        """Stamp the welcome tour as seen. Idempotent: the FIRST stamp wins,
+        so replaying the tour from the ⓘ never moves it.
+
+        Returns:
+            The stored ISO timestamp.
+        """
+        async with _passwd_lock:
+            data = self._load_passwd()
+            users = data.get("users", {})
+            if self._id not in users:
+                raise KeyError(f"User {self._id!r} not found")
+            seen = users[self._id].get("desk_tour_seen_at")
+            if not seen:
+                seen = _now().isoformat()
+                users[self._id]["desk_tour_seen_at"] = seen
+                data["users"] = users
+                self._save_passwd(data)
+            return seen
+
+    async def delete(self) -> None:
+        """Delete this user."""
+        async with _passwd_lock:
+            data = self._load_passwd()
+            users = data.get("users", {})
+            if self._id not in users:
+                raise KeyError(f"User {self._id!r} not found")
+            del users[self._id]
+            data["users"] = users
+            self._save_passwd(data)
+
+    async def link_assistant(self, assistant_agent_id: str) -> None:
+        """Link an assistant agent to this user.
+
+        Args:
+            assistant_agent_id: The assistant agent's ID
+        """
+        async with _passwd_lock:
+            data = self._load_passwd()
+            users = data.get("users", {})
+            if self._id not in users:
+                raise KeyError(f"User {self._id!r} not found")
+            users[self._id]["assistant_agent_id"] = assistant_agent_id
+            data["users"] = users
+            self._save_passwd(data)
+
+    async def link_oauth_identity(
+        self,
+        *,
+        provider: str,
+        provider_subject: str,
+        verified_email: str,
+        display_name: Optional[str] = None,
+        avatar_url: Optional[str] = None,
+    ) -> None:
+        """Append a (provider, provider_subject, verified_email) identity to this
+        user's ``oauth_identities`` and backfill display_name/avatar_url only when
+        currently absent. Idempotent per identity (a duplicate provider+subject is
+        a no-op). Used for explicit linking outside the callback fast-path.
+        """
+        email = (verified_email or "").strip().lower()
+        async with _passwd_lock:
+            data = self._load_passwd()
+            users = data.get("users", {})
+            if self._id not in users:
+                raise KeyError(f"User {self._id!r} not found")
+            rec = users[self._id]
+            idents = rec.setdefault("oauth_identities", [])
+            if not any(i.get("provider") == provider
+                       and i.get("provider_subject") == provider_subject
+                       for i in idents):
+                idents.append({
+                    "provider": provider,
+                    "provider_subject": provider_subject,
+                    "verified_email": email,
+                })
+            if not rec.get("display_name") and display_name:
+                rec["display_name"] = display_name
+            if not rec.get("avatar_url") and avatar_url:
+                rec["avatar_url"] = avatar_url
+            data["users"] = users
+            self._save_passwd(data)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Event Handlers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def on_message(
+        self,
+        project_id: str,
+        chatroom_name: str,
+        message: "ChatMessage",
+        addressed_to_me: bool,
+    ) -> None:
+        """
+        User receives messages - triggers notification script if configured.
+
+        Filtering:
+        - Skip if no notification config
+        - Skip acknowledgment messages (is_ack=True)
+        - Skip non-user-communication chatrooms
+        - Skip messages not from the project coordinator, except an outside
+          contact's (``contact:<id>``): someone writing in to the owner's agent
+          over a channel is news to the owner, the same as the agent's reply
+        """
+        from .chatroom import Chatroom
+        from .project import Project
+
+        # Skip if no notification config
+        if not self._notification_config:
+            return
+
+        # Skip acknowledgment messages
+        if message.is_ack:
+            return
+
+        # Skip non-user-communication chatrooms
+        chatroom = Chatroom.get(project_id, chatroom_name, self._model_ctx)
+        if not chatroom or not chatroom.is_user_communication_room:
+            return
+
+        # Skip messages not from the coordinator, a requester end's counterpart
+        # (its coordinator is the user: plan-owner-isolation) or an outside contact
+        project = Project.get(project_id, self._model_ctx)
+        if not project:
+            return
+        sender = message.from_participant_id
+        if sender == self._id:
+            return                            # never the user's own message
+        if sender not in (project.coordinator_id, project.counterpart_id) and not is_contact_id(sender):
+            return
+
+        # Build notification payload
+        payload = {
+            "event": "message",
+            "project_id": project_id,
+            "project_name": project.name,
+            "display_name": project.display_name,
+            "chatroom_name": chatroom_name,
+            "user_id": self._id,
+            "username": self.username,
+            "message": {
+                "id": message.id,
+                "ts": message.ts.isoformat() if message.ts else None,
+                "from_participant_id": message.from_participant_id,
+                "from_participant_name": message.from_participant_name,
+                "content": message.content,
+            },
+        }
+
+        await self._execute_notification_script(payload)
+
+    async def _execute_notification_script(self, payload: dict) -> None:
+        """Execute the configured notification script with payload via stdin.
+
+        Args:
+            payload: JSON-serializable notification payload
+        """
+        if not self._notification_config:
+            return
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._notification_config.script_path,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=json.dumps(payload).encode()),
+                    timeout=self._notification_config.timeout,
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                logger.error(
+                    f"Notification script timed out after {self._notification_config.timeout}s"
+                )
+                if self._notification_config.fail_fast:
+                    raise RuntimeError("Notification script timed out")
+                return
+
+            if proc.returncode != 0:
+                logger.error(
+                    f"Notification script exited with code {proc.returncode}: "
+                    f"stderr={stderr.decode()}"
+                )
+                if self._notification_config.fail_fast:
+                    raise RuntimeError(
+                        f"Notification script failed with code {proc.returncode}"
+                    )
+            else:
+                if stdout:
+                    logger.debug(f"Notification script output: {stdout.decode()}")
+
+        except FileNotFoundError:
+            logger.error(
+                f"Notification script not found: {self._notification_config.script_path}"
+            )
+            if self._notification_config.fail_fast:
+                raise
+        except Exception as e:
+            logger.error(f"Failed to execute notification script: {e}", exc_info=True)
+            if self._notification_config.fail_fast:
+                raise
+
+    async def on_project_completed(
+        self,
+        project_id: str,
+    ) -> None:
+        """
+        Notification that a project the user created has completed.
+        Can be used to trigger UI notifications.
+        """
+        # Could emit WebSocket notification here
+        pass
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Serialization
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def to_dict(self) -> dict:
+        """Serialize to dictionary (reads from filesystem)."""
+        entry = self._load_passwd_entry()
+        return {
+            "id": self._id,
+            "username": entry.get("username", ""),
+            "email": entry.get("email"),
+            "email_verified": entry.get("email_verified", False),
+            "assistant_agent_id": entry.get("assistant_agent_id"),
+            "created_at": entry.get("created_at", ""),
+            # Additive OAuth fields (absent/empty on legacy password-only records).
+            "oauth_identities": entry.get("oauth_identities", []) or [],
+            "display_name": entry.get("display_name"),
+            "avatar_url": entry.get("avatar_url"),
+        }
+
+    def __repr__(self) -> str:
+        return f"User(id={self._id!r}, username={self.username!r})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, User):
+            return NotImplemented
+        return self._id == other._id
+
+    def __hash__(self) -> int:
+        return hash(self._id)

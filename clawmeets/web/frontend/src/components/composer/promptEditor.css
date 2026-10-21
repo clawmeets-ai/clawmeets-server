@@ -1,0 +1,161 @@
+/* The rich message editor shared by every composer (desk, DM, chatroom,
+   inline reply). Placeholders in a stored prompt render as inline chips the
+   user clicks and fills before sending.
+
+   Scope note: this file styles the CHIPS and their popover only. The visual
+   shell — border, background, padding, font size — belongs to whichever
+   composer mounts the editor, which passes it as `className` (Tailwind in
+   three of the four, `.md-reply-in` in the fourth). Keeping `.pe-input` to
+   layout properties only means the composer's classes always win regardless
+   of stylesheet order. */
+
+.pe-wrap {
+  position: relative;
+  /* Deliberately NO z-index: a stacking context here would paint above the
+     composers' DropOverlay (z-20). `.ph-pop` gets its own z-index instead,
+     which is enough to clear the toolbar within the card. */
+}
+
+.pe-input {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+  cursor: text;
+  position: relative;
+}
+.pe-input:focus { outline: none; }
+
+/* Absolutely positioned so the placeholder never occupies layout — an in-flow
+   ::before shifts the caret on an empty editor in Safari.
+   An abs-positioned child is offset from the PADDING box, so `inset: 0` alone
+   would sit the ghost text flush against the border while the caret sits one
+   padding-width in. `padding: inherit` re-applies whatever padding the mounting
+   composer set (`.md-reply-in`'s 9px/10px, Tailwind elsewhere, 0 when the shell
+   pads a wrapper instead), so ghost text and caret always start at the same
+   spot without this file knowing any composer's numbers. */
+.pe-input[data-blank='1']::before {
+  content: attr(data-ph-holder);
+  position: absolute;
+  inset: 0;
+  padding: inherit;
+  color: var(--ink-4);
+  pointer-events: none;
+}
+
+/* Ghost preview of a hovered sample idea. Deliberately the SAME absolutely
+   positioned slot as the placeholder above, which is what makes it safe:
+   it occupies no layout (so the box can't grow on hover), it adds no React
+   child to the editable region (so the caret contract holds), and the
+   `[data-blank='1']` gate means a typed draft kills it by CSS rather than by
+   JS discipline. Wins over `data-ph-holder` by attribute specificity while
+   `data-ph-ghost` is present.
+
+   Sample prompts run ~40 words, so the preview has to be truncated — but NOT
+   with `-webkit-line-clamp`. An absolutely positioned box is blockified, which
+   turns `display: -webkit-box` into a block and silently drops the clamp; at
+   narrow widths that clipped a fourth line straight through the middle of the
+   glyphs. Instead: an explicit `line-height` and a `max-height` of exactly
+   three of them, so `overflow: hidden` can only ever cut on a line boundary,
+   at any width and in any browser. `content-box` keeps the mounting composer's
+   inherited padding out of that arithmetic. The mask fades the last line out
+   so a truncated preview reads as "there's more", not as a rendering bug. */
+.pe-input[data-blank='1'][data-ph-ghost]::before {
+  content: attr(data-ph-ghost);
+  box-sizing: content-box;
+  line-height: 20px;
+  max-height: 60px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  opacity: 0.92;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 6px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 6px), transparent);
+}
+
+/* ————————————————— chips ————————————————— */
+.ph-chip {
+  display: inline-flex; align-items: center; gap: 5px; margin: 0 1px; padding: 1px 8px 2px;
+  border-radius: 999px; font-size: 12.5px; font-weight: 700; line-height: 1.35; cursor: pointer;
+  user-select: none; border: 1px dashed var(--accent-soft); background: var(--accent-softer); color: var(--accent-deep);
+  transition: background var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.ph-chip:hover { background: #fff; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-softer); }
+.ph-chip.filled { border-style: solid; border-color: var(--accent); background: var(--accent); color: #fff; }
+.ph-chip.filled:hover { background: var(--accent-deep); border-color: var(--accent-deep); box-shadow: 0 0 0 2px var(--accent-softer); }
+.ph-chip.nudge { animation: ph-nudge 0.9s ease; }
+/* Static chips (the SOP card's blank previews, the authoring dialog's live
+   preview) are decoration, not affordances. */
+.ph-chip.static { cursor: default; }
+
+@keyframes ph-nudge {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(230, 59, 138, 0); }
+  20% { box-shadow: 0 0 0 3px rgba(230, 59, 138, 0.28); border-color: var(--av-pink); }
+  60% { box-shadow: 0 0 0 3px rgba(230, 59, 138, 0.28); border-color: var(--av-pink); }
+}
+
+.ph-k {
+  font-family: var(--font-mono); font-size: 8px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+  background: #fff; color: var(--accent-deep); border-radius: 4px; padding: 1px 3px; line-height: 1.3;
+}
+
+/* ————————————————— status row ————————————————— */
+/* flex-wrap is required — this row clips in the narrow desk composer column. */
+.ph-bar { display: flex; align-items: center; gap: 9px; padding: 5px 2px 2px; flex-wrap: wrap; row-gap: 4px; }
+.ph-bar-dots { display: flex; gap: 3px; flex: none; }
+.ph-bar-dots i { width: 12px; height: 4px; border-radius: 999px; background: var(--line-2); transition: background var(--t-fast); }
+.ph-bar-dots i.on { background: var(--accent); }
+.ph-bar-tx { flex: 1 0 auto; min-width: 0; font-size: 10.5px; font-weight: 700; color: var(--ink-3); }
+.ph-bar.done .ph-bar-dots i.on { background: var(--av-green); }
+.ph-bar.done .ph-bar-tx { color: var(--av-green); }
+.ph-bar-go {
+  flex: none; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--accent-soft);
+  background: var(--accent-softer); color: var(--accent-deep); border-radius: 999px; padding: 3px 9px;
+  font-family: inherit; font-size: 10.5px; font-weight: 800; cursor: pointer;
+}
+.ph-bar-go:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+.ph-bar-go kbd { font-family: var(--font-mono); font-size: 9.5px; opacity: 0.75; }
+
+.ph-warn { font-size: 10.5px; font-weight: 700; color: var(--av-pink); padding: 4px 2px 0; }
+
+/* ————————————————— fill popover ————————————————— */
+.ph-pop {
+  position: absolute; z-index: 40; width: 250px; background: #fff; border: 1px solid var(--line-2);
+  border-radius: var(--r-md); box-shadow: var(--shadow-pop); overflow: hidden;
+  animation: ph-pop-in 0.14s ease;
+}
+/* Anchored above the chip when there isn't room below — the desk reply box
+   lives inside an overflow:auto scroller and would otherwise clip. */
+.ph-pop.flip { animation: ph-pop-in-up 0.14s ease; }
+@keyframes ph-pop-in { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes ph-pop-in-up { from { opacity: 0; transform: translateY(4px); } }
+
+.ph-pop-h { display: flex; align-items: center; gap: 7px; padding: 9px 11px 8px; border-bottom: 1px solid var(--line-1); }
+.ph-pop-h .ph-k { background: var(--accent-softer); }
+.ph-pop-lb { flex: 1; min-width: 0; font-size: 11.5px; font-weight: 800; color: var(--ink-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-pop-clr { border: 0; background: transparent; color: var(--ink-4); font-family: inherit; font-size: 10.5px; font-weight: 700; cursor: pointer; padding: 2px 4px; border-radius: 5px; }
+.ph-pop-clr:hover { background: var(--bg-pill-muted); color: var(--ink-2); }
+.ph-pop-list { max-height: 168px; overflow-y: auto; padding: 5px; display: flex; flex-direction: column; gap: 1px; }
+.ph-opt {
+  display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: 0; background: transparent;
+  border-radius: 7px; padding: 6px 8px; font-family: inherit; font-size: 12px; font-weight: 650; color: var(--ink-2); cursor: pointer;
+}
+.ph-opt:hover { background: var(--accent-softer); color: var(--accent-deep); }
+.ph-opt.on { background: var(--accent-softer); color: var(--accent-deep); font-weight: 800; }
+.ph-opt-tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-pop-in { display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-top: 1px solid var(--line-1); background: var(--bg-card-hover); }
+.ph-pop-in input {
+  flex: 1; min-width: 0; border: 1px solid var(--line-2); border-radius: 7px; background: #fff; padding: 6px 8px;
+  font-family: inherit; font-size: 12px; font-weight: 600; color: var(--ink-1);
+}
+.ph-pop-in input:focus { outline: none; border-color: var(--accent-soft); box-shadow: 0 0 0 3px var(--accent-softer); }
+.ph-pop-ok { flex: none; border: 0; background: var(--accent); color: #fff; border-radius: 7px; padding: 6px 10px; font-family: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
+.ph-pop-ok:hover { background: var(--accent-deep); }
+.ph-pop-def { padding: 0 11px 8px; font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-4); }
+/* Multi-pick (`agents`) only: the tick count, and the way out of a menu that
+   deliberately stays open between picks. */
+.ph-pop-n { flex: none; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; color: var(--ink-4); }
+.ph-pop-done {
+  display: block; width: 100%; border: 0; border-top: 1px solid var(--line-1); background: var(--bg-card-hover);
+  color: var(--ink-2); font-family: inherit; font-size: 11px; font-weight: 800; padding: 8px 10px; cursor: pointer;
+  text-align: center;
+}
+.ph-pop-done:hover { background: var(--accent-softer); color: var(--accent-deep); }

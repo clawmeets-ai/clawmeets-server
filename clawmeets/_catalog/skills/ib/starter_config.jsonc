@@ -1,0 +1,35 @@
+{
+  // Interactive Brokers connection coordinates — CONNECTION ONLY.
+  // This file carries NO credentials. Your IBKR username / password / 2FA live
+  // solely inside the human-operated TWS / IB Gateway you connect to; nothing
+  // here is a secret and nothing here is logged.
+  //
+  // Resolved from $CLAWMEETS_AGENT_DIR/skill-hub/configs/ib.json. A missing file
+  // falls back to a localhost IB Gateway (live) on port 4001.
+
+  // Host running TWS / IB Gateway. Keep it on the runner (127.0.0.1) so the API
+  // socket is never exposed off-box.
+  "host": "127.0.0.1",
+
+  // API port. IB Gateway: 4001 live / 4002 paper. TWS: 7496 live / 7497 paper.
+  // Pointing at the paper port yields real-looking but wrong data — verify with
+  // `clawmeets ib doctor` (it reports paper vs live).
+  "port": 4001,
+
+  // A dedicated, unique client id for this read-only client so it doesn't
+  // collide with a human TWS session or another integration.
+  "client_id": 17,
+
+  // Optional. Disambiguates the account to query. Leave "" to use the login's
+  // sole account; if the login manages several, set this (single-account scope
+  // this milestone). Treated as sensitive — never echoed into shared chat.
+  "account": "",
+
+  // Default market-data type: 1=live, 2=frozen, 3=delayed, 4=delayed-frozen.
+  // Leave at 1 (LIVE). Delayed data is otherwise reachable only via the
+  // per-call --allow-delayed flag, which tags the payload data_type=delayed.
+  "market_data_type": 1,
+
+  // Bounded connect timeout (seconds).
+  "connect_timeout_s": 15
+}

@@ -1,0 +1,510 @@
+# SPDX-License-Identifier: MIT
+"""
+clawmeets/models/work_tracker.py
+
+Work tracking for coordinator batch completion detection.
+"""
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime
+from typing import Awaitable, Callable, Optional
+
+from pydantic import BaseModel, Field
+
+OnChangeCallback = Callable[[str, str, list[str]], Awaitable[None]]
+
+
+class PendingWork(BaseModel):
+    """Tracks a coordinator's work dispatch for batch completion detection.
+
+    When a coordinator sends a message with expects_response_from, the server
+    creates a PendingWork record. As participants respond, the server updates
+    responded_participants. When all expected participants have responded, the server
+    sends BATCH_COMPLETE to the coordinator.
+    """
+    model_config = {"frozen": True}
+
+    message_id: str                    # Coordinator's message that initiated this wave
+    message_version: int               # Changelog version of the initiating message (source for workers' replies and BATCH_COMPLETE)
+    chatroom_name: str
+    project_id: str
+    project_name: str                  # Needed for runloop lookup on timeout
+    coordinator_id: str
+    expected_participants: list[str]         # Participant IDs expected to respond
+    responded_participants: list[str] = Field(default_factory=list)  # Participant IDs who have responded
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    timeout_seconds: int = 1800        # Default 30 minutes
+    #: The timer waits: the message has not reached its target yet (it is
+    #: queued for delivery somewhere the server cannot see). Until
+    #: ``start_timer``, no timeout runs; a ceiling counted from
+    #: ``awaiting_since`` still applies (the checker's policy).
+    awaiting_delivery: bool = False
+    awaiting_since: Optional[datetime] = None
+    #: When the timer started, if later than ``created_at`` (``start_timer``).
+    timer_started_at: Optional[datetime] = None
+    managed_job_id: str | None = None
+    managed_job_lease_expires_at: datetime | None = None
+    #: The agent that owns the attached job. While a job is attached, that
+    #: agent's ordinary replies do not answer this batch; the job's closing
+    #: event does (``record_response(from_managed_job=True)``).
+    managed_job_owner_id: str | None = None
+
+    @property
+    def is_complete(self) -> bool:
+        """Check if all expected participants have responded."""
+        return set(self.expected_participants) == set(self.responded_participants)
+
+    @property
+    def timed_out_participants(self) -> list[str]:
+        """Return participants who haven't responded yet."""
+        return [a for a in self.expected_participants if a not in self.responded_participants]
+
+
+class WorkTracker:
+    """
+    In-memory work tracker for coordinator batch completion detection.
+    Lives only for the lifetime of the server process.
+
+    Pending work is keyed by ``(project_id, chatroom_name)`` — chatroom names
+    aren't globally unique (e.g. two projects each have a ``user-communication``
+    room), so scoping to project is required for correctness.
+    """
+
+    def __init__(self, on_change: Optional[OnChangeCallback] = None) -> None:
+        # (project_id, chatroom_name) -> PendingWork
+        self._pending: dict[tuple[str, str], PendingWork] = {}
+        # agent_id -> list of message IDs currently being processed
+        self._agent_processing: dict[str, list[str]] = {}
+        self._lock = asyncio.Lock()
+        # Fired after every PendingWork transition (create / record_response /
+        # clear / clear_project) with the updated outstanding-participant list.
+        # Signature: (project_id, chatroom_name, active_participants). Kept
+        # opaque so WorkTracker stays free of ws_hub/server imports.
+        self._on_change = on_change
+
+    async def _emit_change(
+        self, project_id: str, chatroom_name: str, active_participants: list[str]
+    ) -> None:
+        if self._on_change is None:
+            return
+        await self._on_change(project_id, chatroom_name, active_participants)
+
+    async def create_pending_work(
+        self,
+        message_id: str,
+        message_version: int,
+        project_id: str,
+        project_name: str,
+        chatroom_name: str,
+        coordinator_id: str,
+        expected_participants: list[str],
+        timeout_seconds: int = 1800,
+        awaiting_delivery: bool = False,
+    ) -> PendingWork:
+        key = (project_id, chatroom_name)
+        async with self._lock:
+            if key in self._pending:
+                raise ValueError(
+                    f"Pending work already exists for ({project_id!r}, {chatroom_name!r})"
+                )
+            now = datetime.now(UTC)
+            work = PendingWork(
+                message_id=message_id,
+                message_version=message_version,
+                project_id=project_id,
+                project_name=project_name,
+                chatroom_name=chatroom_name,
+                coordinator_id=coordinator_id,
+                expected_participants=expected_participants,
+                created_at=now,
+                timeout_seconds=timeout_seconds,
+                awaiting_delivery=awaiting_delivery,
+                awaiting_since=now if awaiting_delivery else None,
+            )
+            self._pending[key] = work
+        await self._emit_change(
+            project_id, chatroom_name, list(work.expected_participants)
+        )
+        return work
+
+    async def start_timer(self, project_id: str, chatroom_name: str) -> Optional[PendingWork]:
+        """The message reached its target: the paused batch's timer starts now
+        (its elapsed time counts from here, not from ``created_at``). None
+        when no batch is open; a batch that was not paused is left as is."""
+        key = (project_id, chatroom_name)
+        async with self._lock:
+            work = self._pending.get(key)
+            if work is None or not work.awaiting_delivery:
+                return work
+            work = work.model_copy(update={
+                "awaiting_delivery": False, "timer_started_at": datetime.now(UTC),
+            })
+            self._pending[key] = work
+        return work
+
+    async def get_pending_work(
+        self, project_id: str, chatroom_name: str
+    ) -> Optional[PendingWork]:
+        return self._pending.get((project_id, chatroom_name))
+
+    async def record_response(
+        self,
+        project_id: str,
+        chatroom_name: str,
+        participant_id: str,
+        *,
+        admit_if_absent: bool = False,
+        from_managed_job: bool = False,
+    ) -> Optional[PendingWork]:
+        """Credit ``participant_id``'s reply against the room's open batch.
+
+        While a managed job is attached, a reply from the job's owner is not
+        credited (the batch comes back unchanged) unless ``from_managed_job``:
+        the agent says "started" and ends its turn, and the request must stay
+        open until the job itself closes, exactly once.
+
+        Returns ``None`` when there is no open batch, or when the replier is
+        not one of its ``expected_participants`` — "this reply belongs to no
+        batch of mine" is a meaningful answer and most callers want it.
+
+        ``admit_if_absent`` widens the batch to include a replier it was not
+        waiting for, instead of dropping the reply. That case is real rather
+        than defensive: a batch narrowed to its live members at dispatch can
+        still be open when a narrowed-out agent reconnects (the reconnect
+        backoff floor is 2.0s, ``cli_runner.py:2659``), replays the message
+        from catch-up and answers. Admitting it adds the id to BOTH
+        ``expected_participants`` and — via the append below —
+        ``responded_participants``, so ``is_complete`` is unchanged for the
+        members still outstanding and the late reply reaches the coordinator in
+        ``BATCH_COMPLETE`` instead of vanishing.
+
+        The admit and the credit happen under ONE lock acquisition on purpose:
+        split across two calls, a batch that completed in between would drop
+        the reply anyway.
+        """
+        key = (project_id, chatroom_name)
+        changed = False
+        async with self._lock:
+            work = self._pending.get(key)
+            if work is None:
+                return None
+            if (
+                work.managed_job_id
+                and participant_id == work.managed_job_owner_id
+                and not from_managed_job
+            ):
+                return work
+            if participant_id not in work.expected_participants:
+                if not admit_if_absent:
+                    return None
+                work = work.model_copy(update={
+                    "expected_participants":
+                        work.expected_participants + [participant_id],
+                })
+                self._pending[key] = work
+            if participant_id not in work.responded_participants:
+                # Use immutable update pattern
+                new_responded = work.responded_participants + [participant_id]
+                work = work.model_copy(update={"responded_participants": new_responded})
+                self._pending[key] = work
+                changed = True
+        if changed:
+            await self._emit_change(
+                project_id, chatroom_name, work.timed_out_participants
+            )
+        return work
+
+    async def record_response_opening_if_missing(
+        self,
+        project_id: str,
+        project_name: str,
+        chatroom_name: str,
+        participant_id: str,
+        *,
+        coordinator_id: str,
+        message_id: str,
+        message_version: int,
+        timeout_seconds: int = 1800,
+    ) -> Optional[PendingWork]:
+        """Record a response, synthesizing a one-participant batch if none is open.
+
+        A reply can arrive in a room with no open batch — e.g. an agent posts a
+        follow-up after its earlier batch already completed, or a foreign agent
+        mirrors a second (final) message through the tunnel after its first reply
+        closed the batch. Without an open batch the reply would be invisible to
+        the batch-completion machinery and the room's coordinator would never be
+        re-woken to look at it.
+
+        When no batch is open for ``(project_id, chatroom_name)`` this synthesizes
+        one expecting only ``participant_id`` (coordinator = ``coordinator_id``,
+        the room's coordinator), then records the response — so the batch is
+        immediately complete and the caller fires BATCH_COMPLETE as usual.
+
+        When a batch IS already open but is not waiting for ``participant_id``,
+        the reply is admitted into it rather than dropped. Both shapes have the
+        same cause — a reply arriving from an agent the room's batch machinery
+        is not expecting — and the room key ``(project_id, chatroom_name)``
+        means the second shape cannot be handled by synthesizing a batch:
+        ``create_pending_work`` would collide. It is reachable whenever a batch
+        was narrowed to its live members at dispatch and a narrowed-out agent
+        reconnects and answers while that batch is still open.
+
+        Callers MUST guard ``participant_id != coordinator_id`` before calling —
+        synthesizing a batch whose coordinator is the replier would wake the
+        replier on its own message (infinite loop).
+        """
+        if self._pending.get((project_id, chatroom_name)) is None:
+            try:
+                await self.create_pending_work(
+                    message_id=message_id,
+                    message_version=message_version,
+                    project_id=project_id,
+                    project_name=project_name,
+                    chatroom_name=chatroom_name,
+                    coordinator_id=coordinator_id,
+                    expected_participants=[participant_id],
+                    timeout_seconds=timeout_seconds,
+                )
+            except ValueError:
+                # A concurrent reply opened a batch between the check and the
+                # create — fall through and record against whatever is now open.
+                pass
+        return await self.record_response(
+            project_id, chatroom_name, participant_id, admit_if_absent=True
+        )
+
+    async def restore_in_flight(
+        self,
+        *,
+        message_id: str,
+        message_version: int,
+        project_id: str,
+        project_name: str,
+        chatroom_name: str,
+        coordinator_id: str,
+        participant_id: str,
+        started_at: datetime,
+        timeout_seconds: int = 1800,
+    ) -> PendingWork:
+        """Record that ``participant_id`` is mid-turn in this room. Idempotent.
+
+        Called when a runner reconnects and reports a turn the server has no
+        record of — the tracker is in-memory, so a server restart forgets every
+        open batch while the runners keep working.
+
+          * no open batch                 -> open one expecting only
+            ``participant_id``, with ``created_at = started_at`` so the restart
+            does not reset the turn's timeout clock;
+          * open batch already expects it -> no-op (the normal path, or a
+            duplicate report from a second reconnect);
+          * open batch does not expect it -> add it to
+            ``expected_participants`` only, NOT ``responded_participants``, so
+            the batch now also waits for its reply.
+
+        One lock acquisition, like ``record_response``.
+        """
+        key = (project_id, chatroom_name)
+        async with self._lock:
+            work = self._pending.get(key)
+            if work is not None and participant_id in work.expected_participants:
+                return work
+            if work is None:
+                work = PendingWork(
+                    message_id=message_id,
+                    message_version=message_version,
+                    project_id=project_id,
+                    project_name=project_name,
+                    chatroom_name=chatroom_name,
+                    coordinator_id=coordinator_id,
+                    expected_participants=[participant_id],
+                    created_at=started_at,
+                    timeout_seconds=timeout_seconds,
+                )
+            else:
+                work = work.model_copy(update={
+                    "expected_participants":
+                        work.expected_participants + [participant_id],
+                })
+            self._pending[key] = work
+        await self._emit_change(
+            project_id, chatroom_name, work.timed_out_participants
+        )
+        return work
+
+    async def restore_awaiting_delivery(
+        self,
+        *,
+        message_id: str,
+        message_version: int,
+        project_id: str,
+        project_name: str,
+        chatroom_name: str,
+        coordinator_id: str,
+        expected_participants: list[str],
+        awaiting_since: datetime,
+        timeout_seconds: int = 1800,
+        timer_started_at: Optional[datetime] = None,
+    ) -> PendingWork:
+        """Reopen a batch paused on a delivery after a server restart (the
+        tracker is in memory). ``awaiting_since`` is when it first began
+        waiting, so a restart never resets the ceiling counted from it.
+        ``timer_started_at``: the message had already reached its target then,
+        so the batch is not paused and its timer runs from that time (a
+        restart does not restart it). Idempotent: an open batch for the room
+        is returned as it is."""
+        key = (project_id, chatroom_name)
+        async with self._lock:
+            work = self._pending.get(key)
+            if work is not None:
+                return work
+            work = PendingWork(
+                message_id=message_id,
+                message_version=message_version,
+                project_id=project_id,
+                project_name=project_name,
+                chatroom_name=chatroom_name,
+                coordinator_id=coordinator_id,
+                expected_participants=expected_participants,
+                created_at=awaiting_since,
+                timeout_seconds=timeout_seconds,
+                awaiting_delivery=timer_started_at is None,
+                awaiting_since=awaiting_since,
+                timer_started_at=timer_started_at,
+            )
+            self._pending[key] = work
+        await self._emit_change(project_id, chatroom_name, list(work.expected_participants))
+        return work
+
+    async def remap_expected(
+        self, project_id: str, chatroom_name: str, mapping: dict[str, str]
+    ) -> None:
+        """Swap participant ids in a pending batch's ``expected_participants``.
+
+        Used when an agent is re-registered with a new id and we need any
+        in-flight batch addressed to the deleted predecessor to credit the
+        new agent's reply (otherwise ``record_response(new_id)`` no-ops
+        against a stale expected id and the batch silently times out).
+
+        No-op when there's no pending work, or no expected id matches the
+        mapping's keys. Preserves the responded_participants set (if a
+        stale id is in responded, that's already credited and we keep it).
+        """
+        if not mapping:
+            return
+        key = (project_id, chatroom_name)
+        changed = False
+        async with self._lock:
+            work = self._pending.get(key)
+            if work is None:
+                return
+            new_expected = [mapping.get(pid, pid) for pid in work.expected_participants]
+            if new_expected == work.expected_participants:
+                return
+            work = work.model_copy(update={"expected_participants": new_expected})
+            self._pending[key] = work
+            changed = True
+        if changed:
+            await self._emit_change(
+                project_id, chatroom_name, list(work.expected_participants)
+            )
+
+    async def clear_pending_work(self, project_id: str, chatroom_name: str) -> None:
+        async with self._lock:
+            existed = self._pending.pop((project_id, chatroom_name), None) is not None
+        if existed:
+            await self._emit_change(project_id, chatroom_name, [])
+
+    async def attach_managed_job(
+        self,
+        project_id: str,
+        chatroom_name: str,
+        *,
+        message_id: str,
+        job_id: str,
+        owner_id: str,
+        lease_expires_at: datetime,
+    ) -> PendingWork:
+        """Attach a server-authenticated job lease to the matching open batch."""
+        async with self._lock:
+            key = (project_id, chatroom_name)
+            work = self._pending.get(key)
+            if work is None or work.message_id != message_id:
+                raise ValueError("matching pending work is no longer open")
+            if work.managed_job_id and work.managed_job_id != job_id:
+                raise ValueError("pending work already has a managed job")
+            work = work.model_copy(update={
+                "managed_job_id": job_id,
+                "managed_job_owner_id": owner_id,
+                "managed_job_lease_expires_at": lease_expires_at,
+            })
+            self._pending[key] = work
+            return work
+
+    async def renew_from_managed_job(
+        self,
+        project_id: str,
+        chatroom_name: str,
+        job_id: str,
+        lease_expires_at: datetime,
+    ) -> PendingWork | None:
+        async with self._lock:
+            key = (project_id, chatroom_name)
+            work = self._pending.get(key)
+            if work is None or work.managed_job_id != job_id:
+                return None
+            work = work.model_copy(update={"managed_job_lease_expires_at": lease_expires_at})
+            self._pending[key] = work
+            return work
+
+    async def clear_project(self, project_id: str) -> None:
+        """Remove all pending work for a project."""
+        async with self._lock:
+            to_remove = [
+                key for key in self._pending if key[0] == project_id
+            ]
+            for key in to_remove:
+                del self._pending[key]
+        for _, chatroom_name in to_remove:
+            await self._emit_change(project_id, chatroom_name, [])
+
+    async def get_all_pending_work(self) -> list[PendingWork]:
+        return list(self._pending.values())
+
+    async def is_project_idle(self, project_id: str) -> bool:
+        """Return True iff no chatroom in ``project_id`` has an open batch.
+
+        ``_pending`` only holds incomplete batches (entries are removed by
+        :meth:`clear_pending_work` on BATCH_COMPLETE), so the presence of any
+        key whose first element is ``project_id`` is sufficient to decide
+        the project is busy.
+        """
+        return not any(key[0] == project_id for key in self._pending)
+
+    async def update_agent_processing(
+        self, agent_id: str, processing_message_ids: list[str]
+    ) -> None:
+        async with self._lock:
+            self._agent_processing[agent_id] = processing_message_ids
+
+    async def get_agent_processing(self, agent_id: str) -> list[str]:
+        return self._agent_processing.get(agent_id, [])
+
+    async def get_processing_agents(
+        self, project_id: str, chatroom_name: str, participant_ids: list[str]
+    ) -> list[str]:
+        """Return participants of ``(project_id, chatroom_name)`` with outstanding work.
+
+        Scoped to a single chatroom: only looks at the pending batch for this
+        specific (project, chatroom) pair, not pending work elsewhere. This
+        prevents a coordinator who is busy in one project's user-communication
+        from lighting up the typing indicator in an unrelated DM chatroom.
+        """
+        work = self._pending.get((project_id, chatroom_name))
+        if work is None:
+            return []
+        outstanding = {
+            pid for pid in work.expected_participants
+            if pid not in work.responded_participants
+        }
+        return [pid for pid in participant_ids if pid in outstanding]

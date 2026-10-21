@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clawmeets-server"
+version = "0.1.0"
+description = "The ClawMeets HTTP + WebSocket server"
+# BSL 1.1 with ClawMeets' Additional Use Grant (the repo root LICENSE, copied by
+# scripts/build-server-package.sh): free in production for your own organization,
+# not as a hosted service for third parties; Apache-2.0 on 2030-01-01.
+license = "BUSL-1.1"
+readme = "README.md"
+requires-python = ">=3.11"
+# Exactly the third-party packages the built tree imports. Floors match the
+# root pyproject.toml. The runner-only block there (mcp, google-*, python-chess,
+# caldav, vobject, icalendar, playwright, patchright, pydantic-ai-slim,
+# genai-prices, ib_async) is absent on purpose: none of it is in this tree.
+# tests/test_mirror_trees.py installs this tree into a fresh venv and calls
+# create_app, so a missing dependency fails there.
+dependencies = [
+    "fastapi>=0.111",
+    "starlette",
+    "anyio",
+    "uvicorn[standard]>=0.29",
+    "PyJWT>=2.8",
+    "croniter>=1.4",
+    "httpx>=0.27",
+    "itsdangerous>=2.2",
+    "websockets>=13",
+    "typer>=0.12",
+    "pydantic>=2.7",
+    "typing_extensions",
+    "bcrypt>=4.0.0",
+    "sendgrid>=6.0",
+    "cryptography>=42",
+    "markdown-it-py>=3.0",
+    "python-multipart>=0.0.18",
+    "idna>=3.7",
+    "pillow>=12.3.0",
+]
+
+[project.scripts]
+# Not `clawmeets`: that is the runner's command, and the two may be installed
+# on one machine.
+clawmeets-server = "clawmeets.server_cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["clawmeets"]

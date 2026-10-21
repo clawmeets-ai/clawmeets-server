@@ -1,0 +1,806 @@
+# SPDX-License-Identifier: MIT
+"""
+clawmeets/api/control.py
+WebSocket control envelope model.
+
+Part of the API layer (Layer 0) alongside actions.py and responses.py.
+Defines the WebSocket protocol types used between runner and server.
+"""
+from __future__ import annotations
+
+from enum import Enum
+from typing import Literal, Union
+
+from pydantic import BaseModel, Field, model_validator
+
+
+class ControlMessageType(str, Enum):
+    """WebSocket control message types.
+
+    The WebSocket protocol is notification-only — every envelope is a small
+    pointer/trigger; bulk data (messages, files, batches) is fetched
+    separately over HTTP via the changelog.
+
+    Direction:
+    - Client -> Server: HEARTBEAT
+    - Server -> Client (everything else):
+        - To runners (agents) only:
+            SKILL_SYNC, MCP_SYNC, AGENT_SETTINGS_CHANGE, CANCEL_LLM,
+            MCP_AUTH_CODE, KNOWLEDGE_PACK_SYNC, AGENT_REGISTRY_CHANGE,
+            AGENT_ENV_REQUEST, ISOLATION_RECHECK_REQUEST
+        - To user UIs (web frontend) only:
+            AGENT_STATUS_CHANGE, MCP_AUTH_URL_FOR_USER, AGENT_CARD_UPDATE,
+            RUNNER_VERSIONS, HOST_SYNC, INSTALL_SYNC
+        - To both (fan-out via ``ws_hub.broadcast_to_project`` over every
+          project participant — agents, coordinator, owner, FD requester,
+          share-token viewers):
+            CHANGELOG_UPDATE, PROJECT_DELETED, ACTIVE_WORK_CHANGE
+
+    Runners act on CHANGELOG_UPDATE (wake the per-project runloop) and
+    PROJECT_DELETED (tear down runloop + delete local project/sandbox/
+    metadata dirs); they receive ACTIVE_WORK_CHANGE but currently no-op
+    on it. UIs use the same envelopes for cache invalidation and to
+    render typing / "actively working" indicators.
+    """
+    CHANGELOG_UPDATE = "changelog_update"  # Server notifies client of new changelog entries
+    HEARTBEAT = "heartbeat"                # Connection health check
+    AGENT_STATUS_CHANGE = "agent_status_change"  # Server notifies clients of agent online/offline
+    PROJECT_DELETED = "project_deleted"            # Server notifies clients that a project was deleted
+    SKILL_SYNC = "skill_sync"              # Server notifies client to install/uninstall a skill
+    MCP_SYNC = "mcp_sync"                  # Server notifies client to install/uninstall an MCP server
+    AGENT_SETTINGS_CHANGE = "agent_settings_change"  # Server notifies agent of local_settings update
+    CANCEL_LLM = "cancel_llm"              # Server tells runner to kill the in-flight LLM subprocess
+    ACTIVE_WORK_CHANGE = "active_work_change"  # PendingWork state changed in a chatroom
+    MCP_AUTH_URL_FOR_USER = "mcp_auth_url_for_user"  # Server pushes a "Continue with Google" link to the agent's owner
+    MCP_AUTH_CODE = "mcp_auth_code"        # Server forwards an OAuth code to the runner after the user finishes consent
+    SKILL_AUTH_URL_FOR_USER = "skill_auth_url_for_user"  # Skill-rail sibling of MCP_AUTH_URL_FOR_USER
+    SKILL_AUTH_CODE = "skill_auth_code"    # Skill-rail sibling of MCP_AUTH_CODE
+    KNOWLEDGE_PACK_SYNC = "knowledge_pack_sync"  # Server notifies client to install/uninstall a knowledge pack
+    AGENT_REGISTRY_CHANGE = "agent_registry_change"  # Server notifies peer runners that an agent was registered/updated
+    AGENT_CARD_UPDATE = "agent_card_update"  # Server notifies the agent's owner UI of card-field bumps (last_reflected_at)
+    BRIEF_TAB_SYNC = "brief_tab_sync"  # Server notifies the owning user that a brief-tab was upserted / deleted
+    PROJECT_REPORT_SYNC = "project_report_sync"  # Server notifies project participants that the report was upserted / deleted
+    PROJECT_PLAN_SYNC = "project_plan_sync"  # Server notifies project participants that PLAN.md or its sidecar moved
+    DESK_TODO_SYNC = "desk_todo_sync"  # Server notifies the owning user that a desk to-do was captured / patched / published / removed
+    DESK_READ_STATE_SYNC = "desk_read_state_sync"  # Server notifies the owning user that a My Desk read-state watermark was upserted
+    DESK_SOP_SYNC = "desk_sop_sync"  # Server notifies the owning user that a desk SOP was created / edited / removed
+    DESK_LABEL_SYNC = "desk_label_sync"  # Server notifies the owning user that their label registry moved — created / renamed / recoloured / reordered / deleted / merged
+    # Server -> the ONE owning user: a full snapshot of that user's live
+    # runners and the clawmeets version each reports.
+    #
+    # RECIPIENT WARNING — read before touching any call site.
+    # The recipient is a SINGLE user: ``participant.registered_by``, delivered
+    # with ``ws_hub.send_to``. It is NEVER
+    # ``server/routes/websocket.get_status_broadcast_recipients``, which
+    # returns a mixed set of agent ids and user ids spanning every shared
+    # project — and which runners themselves consume
+    # (``runner/reactive_loop.py``). Sending this envelope there would ship one
+    # user's agent NAMES and VERSION NUMBERS to other users and to other
+    # people's runners, and version numbers map directly to known-vulnerability
+    # surface.
+    #
+    # The name is RUNNER_VERSIONS, not RUNNER_STATUS, precisely because the
+    # latter sat one word from AGENT_STATUS_CHANGE — the shared, cross-tenant
+    # envelope — and invited exactly that mistake.
+    RUNNER_VERSIONS = "runner_versions"
+
+    # Server -> the ONE owning user: "one of your computers moved". Same
+    # recipient rule and same reason as RUNNER_VERSIONS — ``ws_hub.send_to``
+    # against ``host.owner_user_id``, never
+    # ``get_status_broadcast_recipients``, which spans other people's projects
+    # and other people's runners. A machine name, the software version it runs
+    # and the roster of agents on it are all this user's business alone.
+    #
+    # A CURSOR, not a snapshot: it names the host and what happened, and the
+    # browser refetches ``GET /me/computers``. Nothing about a machine's state
+    # travels in this payload, so a dropped frame costs a stale page until the
+    # next one rather than a wrong page.
+    HOST_SYNC = "host_sync"
+    INSTALL_SYNC = "install_sync"      # owner-scoped cursor: their one-command install moved
+
+    # Server -> the ONE agent whose env-var store is being read or changed
+    # (``ws_hub.send_to(agent.id)``). The runner performs the change itself,
+    # against the same ``env_store`` the ``clawmeets env`` CLI writes, and
+    # answers over HTTP (``POST /agents/{id}/env/requests/{request_id}``).
+    # An ``env_set`` carries the value — a secret — so this envelope must never
+    # reach a browser or another participant.
+    AGENT_ENV_REQUEST = "agent_env_request"
+
+    # Server -> the ONE agent whose isolation check its owner (or the agent
+    # itself) asked to re-run (``POST /agents/{id}/isolation-check``). Sent
+    # only to a socket that advertised ``ISOLATION_RECHECK_CAPABILITY``. The
+    # runner re-runs its start canaries without first withdrawing
+    # ``isolated_turns.v1`` and reports the outcome over HTTP
+    # (``POST /agents/{id}/isolation-check/result``).
+    ISOLATION_RECHECK_REQUEST = "isolation_recheck_request"
+
+    # Server -> every runner, browser and CLI listener that advertised
+    # RESYNC_CAPABILITY: "catch up as if you had just reconnected". With the
+    # websocket edge in front of core (``clawmeets server ws-edge``), a core
+    # restart no longer drops sockets, so the catch-up a reconnect used to
+    # trigger has to be asked for. Never sent to computers.
+    RESYNC = "resync"
+    # Server -> the ONE user it concerns (browser only), payload a plain dict
+    # shaped by the server's hub browser contract: a requester's message
+    # changed delivery state ({project_id, delivery}), or an agent owner's
+    # Hub channel changed ({agent_full_name, channel}).
+    HUB_DELIVERY_STATE = "hub_delivery_state"
+    HUB_CHANNEL_STATUS = "hub_channel_status"
+    # Server -> the project owner's browser sockets, payload a plain dict
+    # ``{project_id, chatroom_name, flow: RoomFlow}``: a room's inbound flow
+    # of outside messages was stopped or reopened (server/room_flow.py).
+    CHATROOM_FLOW_CHANGED = "chatroom_flow_changed"
+    HUB_BRIDGE_DELIVERY = "hub_bridge_delivery"   # Server→owner browser: a room-bridge relay changed state
+
+
+class ChangelogUpdatePayload(BaseModel):
+    """Payload for CHANGELOG_UPDATE messages.
+
+    Minimal payload - clients should invalidate all project caches.
+    """
+    project_id: str
+    project_name: str
+    new_version: int
+    coordinator_id: str
+
+
+class AgentStatusChangePayload(BaseModel):
+    """Payload for AGENT_STATUS_CHANGE messages."""
+    agent_id: str
+    agent_name: str
+    new_status: str  # AgentStatus value: "online", "offline", "busy"
+
+
+class ProjectDeletedPayload(BaseModel):
+    """Payload for PROJECT_DELETED messages."""
+    project_id: str
+    project_name: str
+
+
+class SkillSyncPayload(BaseModel):
+    """Payload for SKILL_SYNC messages."""
+    agent_id: str
+    agent_name: str
+    action: str  # "install" | "uninstall" | "reauth" | "revoke"
+    skill_name: str
+    skill_content: str  # Full SKILL.md content — sent on both install and uninstall; consumer gates on ``action``
+    # Sibling files alongside SKILL.md (template.html, render.py, etc.). Keyed
+    # by forward-slash relpath under ``skills/<name>/``; each value is
+    # ``{"content_b64": <base64-encoded bytes>}`` to mirror
+    # ``KnowledgePackSyncPayload`` and stay JSON-safe over the wire. Empty when
+    # the skill has no companion files.
+    skill_files: dict[str, dict] = Field(default_factory=dict)
+    # OAuth block from the registry entry, when the skill declares one (gmail
+    # / gcal / gdrive / gdrive-write). Empty / None on uninstall and on skills
+    # without auth. Shape: ``{"method": "google_oauth_installed", "scopes":
+    # [...], "token_file": "token.json"}``. The runner reads this on install
+    # to fire ``_spawn_auto_auth_skill``; consumers without an interest skip it.
+    auth: dict | None = None
+    # Content version (``models/skill_version``) of the skill on install. The
+    # runner records it so catch-up can tell when the server's copy changed.
+    # None from older servers → the runner refetches the skill once.
+    skill_version: str | None = None
+
+
+class McpSyncPayload(BaseModel):
+    """Payload for MCP_SYNC messages.
+
+    The manifest (`launch` + `auth` spec) is sent on install so the runner
+    can cache it locally and doesn't need to round-trip to the server for
+    every .mcp.json render. Empty on uninstall — consumer gates on ``action``.
+    """
+    agent_id: str
+    agent_name: str
+    action: str  # "install" or "uninstall"
+    mcp_name: str
+    manifest: dict = Field(default_factory=dict)
+
+
+class AgentSettingsChangePayload(BaseModel):
+    """Payload for AGENT_SETTINGS_CHANGE messages.
+
+    Carries server-side card edits the runner must mirror to its local
+    `card.json` so subsequent prompt builds see fresh values. ``local_settings``
+    covers ``knowledge_dir`` / ``llm_provider`` / ``llm_model`` (the original
+    runner config). May be ``None`` when unchanged in this envelope.
+
+    ``model_configs`` / ``default_model_config_name`` carry the named model
+    configs (model-selector revamp) so the runner mirrors them onto its
+    self-card — needed to resolve a per-request ``model_config_name`` override.
+    ``None`` ⇒ unchanged in this envelope (leave the runner's copy intact).
+
+    SECURITY: ``model_configs`` entries carry each config's write-only, RAW
+    ``api_key`` — this envelope is delivered ONLY to the agent's own runner
+    (``ws_hub.send_to(agent.id)``), which needs the key to invoke a keyed
+    provider. It must NEVER be forwarded to browser/user clients; those read the
+    redacted shape over HTTP (``redact_model_configs`` → ``api_key_set`` only).
+    """
+    # protected_namespaces=() so ``model_config*`` fields don't collide with
+    # Pydantic's ``model_`` protected namespace.
+    model_config = {"protected_namespaces": ()}
+
+    agent_id: str
+    agent_name: str
+    local_settings: dict | None = None  # None = unchanged in this envelope
+    model_configs: list[dict] | None = None  # None = unchanged in this envelope
+    default_model_config_name: str | None = None  # default config name (or None)
+
+
+class CancelLLMPayload(BaseModel):
+    """Payload for CANCEL_LLM messages.
+
+    Identifies the specific in-flight LLM invocation to terminate. The runner
+    keys its in-flight tasks by (project_id, chatroom_name); agent_id is
+    included so the runner can defensively confirm the message was routed to
+    the right participant before acting.
+    """
+    agent_id: str
+    project_id: str
+    chatroom_name: str
+
+
+class ActiveWorkChangePayload(BaseModel):
+    """Payload for ACTIVE_WORK_CHANGE messages.
+
+    Sent whenever a WorkTracker PendingWork entry transitions — create, each
+    individual response, clear, or project-wide clear. ``active_participants``
+    is the list of expected responders who have not yet replied; an empty list
+    means the batch is complete (or was cancelled/timed out).
+
+    One signal serves both the sidebar "actively being worked on" indicator
+    (is_active = len(active_participants) > 0) and the in-room typing indicator
+    (which renders one chip per participant id).
+    """
+    project_id: str
+    project_name: str
+    chatroom_name: str
+    active_participants: list[str]
+
+
+class McpAuthUrlForUserPayload(BaseModel):
+    """Payload for MCP_AUTH_URL_FOR_USER messages.
+
+    Sent server -> user (the agent's owner) when the runner has built a Google
+    consent URL for an MCP that needs OAuth. The user's web UI renders this
+    as a "Continue with Google" link. ``state`` is the one-shot token the
+    server uses to correlate the eventual /oauth/mcp/callback hit back to the
+    runner; the frontend doesn't need to read it but echoing it is harmless.
+    """
+    agent_id: str
+    agent_name: str
+    mcp_name: str
+    auth_url: str
+    state: str
+
+
+class McpAuthCodePayload(BaseModel):
+    """Payload for MCP_AUTH_CODE messages.
+
+    Sent server -> runner after the user completes consent and Google redirects
+    to /oauth/mcp/callback. The runner exchanges the code for tokens locally
+    via google-auth-oauthlib. The server never sees the resulting access /
+    refresh tokens.
+    """
+    agent_id: str
+    mcp_name: str
+    state: str
+    code: str
+
+
+class SkillAuthUrlForUserPayload(BaseModel):
+    """Payload for SKILL_AUTH_URL_FOR_USER messages.
+
+    Skill-rail sibling of ``McpAuthUrlForUserPayload``. Sent server -> user
+    when the runner has built a Google consent URL for a skill whose
+    registry entry declares an ``auth`` block (gmail / google-calendar /
+    google-drive / google-drive-write). The user's web UI renders this
+    as a "Continue with Google" link; on completion the server forwards
+    the code back to the runner via ``SKILL_AUTH_CODE``.
+    """
+    agent_id: str
+    agent_name: str
+    skill_name: str
+    auth_url: str
+    state: str
+
+
+class SkillAuthCodePayload(BaseModel):
+    """Payload for SKILL_AUTH_CODE messages.
+
+    Skill-rail sibling of ``McpAuthCodePayload``. Sent server -> runner
+    after the user completes consent and Google redirects to
+    ``/oauth/skill/callback``. The runner exchanges the code for tokens
+    locally and writes the token to
+    ``{agent_dir}/skill-hub/state/<skill_name>/token.json`` (mode 0600).
+    The server never sees the resulting access / refresh tokens.
+    """
+    agent_id: str
+    skill_name: str
+    state: str
+    code: str
+
+
+class KnowledgePackSyncPayload(BaseModel):
+    """Payload for KNOWLEDGE_PACK_SYNC messages.
+
+    Sent server -> runner whenever a user-curated knowledge pack is installed,
+    re-installed (after a pack edit), or uninstalled on a specific agent. The
+    pack's full file set travels in the envelope so the runner can rewrite
+    ``{knowledge_dir}/knowledge-packs/{slug}/`` without a round-trip.
+    """
+    agent_id: str
+    agent_name: str
+    action: str  # "install" or "uninstall"
+    pack_slug: str
+    pack_name: str | None = None              # human-readable name (None on uninstall)
+    pack_description: str | None = None       # one-line index hint (None on uninstall)
+    # {relative_path: {"content_b64": <base64-encoded bytes>}}. Empty on
+    # uninstall — runner gates on ``action``.
+    pack_files: dict[str, dict] = Field(default_factory=dict)
+    # The pack version these files are. The runner records it so its next
+    # catch-up can tell the server it already holds this version. None from
+    # older servers → the runner records nothing and refetches once.
+    pack_updated_at: str | None = None
+
+
+class AgentRegistryChangePayload(BaseModel):
+    """Payload for AGENT_REGISTRY_CHANGE messages.
+
+    Fan-out to peer runners owned by the same user when an agent in the
+    registry is registered, re-registered, has a peer-visible field changed
+    (``user_teams``, ``description``, ``capabilities``,
+    ``discoverable_through_registry``, rename), or is deleted. For
+    register/update, receivers re-run ``Agent.sync_from_server`` to refresh
+    their local peer-card cache. For delete, receivers prune the specific
+    peer-card directory (``Agent.prune_peer_card``) so the per-turn invitable
+    resolver (``_resolve_invitable_agents_for_prompt``) sees live state
+    without a runner restart.
+
+    Sibling of ``AGENT_SETTINGS_CHANGE`` (which carries runner-local state
+    delivered only to the changed agent itself). The two stay orthogonal:
+    peer-visible registry edits ride this envelope; runner-local config
+    rides ``AGENT_SETTINGS_CHANGE``.
+    """
+    changed_agent_id: str
+    changed_agent_name: str
+    action: str  # "register" | "update" | "delete"; "retain" | "unretain" | "retain_state" (hub roster)
+
+
+class AgentCardUpdatePayload(BaseModel):
+    """Payload for AGENT_CARD_UPDATE messages.
+
+    Server-side cursor bump on the agent card: reflect-trigger replies move
+    ``last_reflected_at``. Delivered to the agent's
+    owner so the Agent Settings page's "Memory & Reflection" panel can
+    live-refresh without a full page reload. Distinct from
+    ``AGENT_SETTINGS_CHANGE`` (runner-local config) and
+    ``AGENT_REGISTRY_CHANGE`` (peer-visible registry fan-out): these cursors
+    are neither settings nor peer-visible.
+    """
+    agent_id: str
+    agent_name: str
+    last_reflected_at: str | None = None
+
+
+class BriefTabSyncPayload(BaseModel):
+    """Payload for BRIEF_TAB_SYNC messages.
+
+    Sent server -> the tab-owning user (not the publishing agent) whenever
+    any of the user's agents upserts or deletes a brief tab via
+    ``PUT|DELETE /me/brief/tabs/{slug}``. The frontend listens and
+    invalidates its ``['brief-tabs']`` query so My Desk re-renders with the
+    fresh tab.
+
+    Carries only the per-tab cursor, never the document. The metadata
+    strip is refetched via ``GET /me/brief/tabs`` and the briefing's HTML
+    document via ``GET /me/brief/tabs/{slug}``.
+    """
+    action: str            # "upsert" | "delete"
+    slug: str
+    title: str | None = None
+    generated_at: str | None = None
+
+
+class ProjectPlanSyncPayload(BaseModel):
+    """Payload for PROJECT_PLAN_SYNC messages (§6, D4).
+
+    Broadcast to every participant of a project on **every** plan mutation, and
+    exactly once per mutation (AC-3.1). Modelled on
+    :class:`ProjectReportSyncPayload`: it carries the cursor, never the body.
+    The plan tab refetches ``GET /projects/{id}/plan``.
+
+    ``sections`` is the list of slugs that **moved** — the one member a client
+    cannot derive from a refetch, because after the refetch the previous body is
+    gone. It is ``[]`` for an action that wrote no bytes (a note, a draft, a
+    refusal), which is honest rather than empty: those actions moved no section.
+
+    **What the frontend does with it** (§6): with nothing staged and nothing
+    being typed the tab silently reloads; with a tray or unsaved typing it shows
+    a non-blocking banner and reloading never discards the tray, because rows
+    carry their own ``base``.
+    """
+    project_id: str
+    #: create|write|refused|note|apply|resolve|draft|review|round-close|approve|revoke
+    action: str
+    sections: list[str] = Field(default_factory=list)
+    sha: str = ""
+    revision: int = 0
+    by_agent_name: str = ""
+    updated_at: str = ""
+
+
+class ProjectReportSyncPayload(BaseModel):
+    """Payload for PROJECT_REPORT_SYNC messages.
+
+    Broadcast to every participant of a project whenever the project's
+    interactive report is upserted or deleted via
+    ``PUT|DELETE /projects/{id}/report``. The frontend listens on the
+    project-detail view and invalidates ``['project-report', project_id]``
+    so the Report tab re-fetches and re-renders.
+
+    Carries only the cursor; the full payload (data + render code) is
+    fetched separately via ``GET /projects/{id}/report``.
+    """
+    project_id: str
+    action: str            # "upsert" | "delete"
+    title: str | None = None
+    generated_by_agent_name: str | None = None
+    generated_at: str | None = None
+
+
+class DeskTodoSyncPayload(BaseModel):
+    """Payload for DESK_TODO_SYNC messages.
+
+    Sent server -> the plate-owning user whenever their desk to-do list
+    changes — a self-capture, an archive/draft patch, a reorder, a delete,
+    an agent team member publishing a to-do via ``PUT /me/desk/todos``, a
+    project association being added or removed, or a PROJECT EVENT that moved
+    a row's derived ticket state. The frontend invalidates its
+    ``['desk-todos']`` query so the My Desk To-do rail re-renders.
+
+    Carries only the action + affected id; the full list is fetched via
+    ``GET /me/desk/todos``. **The three association-era members add no new
+    payload shape on purpose** — the desk ignores the payload and refetches, so
+    a richer envelope would be a second source of truth for the plate with no
+    reader.
+
+    ``id`` semantics differ by action, and the difference is load-bearing:
+
+    * ``associate`` / ``dissociate`` carry the **to-do id** — one row moved.
+    * ``project`` carries **``None``**. One project event (completing,
+      reactivating, deleting) can move several rows at once, and the refetch is
+      whole-plate anyway; naming one row would be a lie about scope.
+    """
+    action: str            # "add" | "patch" | "reorder" | "delete" | "publish"
+                           #       | "associate" | "dissociate" | "project"
+    id: str | None = None
+
+
+class DeskSopSyncPayload(BaseModel):
+    """Payload for DESK_SOP_SYNC messages.
+
+    Sent server -> the library-owning user whenever their desk SOP list
+    changes — a create, an edit, or a delete. Fanned out to EVERY live
+    session the owner holds (``WSHub.send_to``), so a library edited in one
+    browser tab updates in all the others without a reload. The originating
+    session receives it too; the resulting refetch is idempotent.
+
+    Carries only the action + affected id; the full list is fetched via
+    ``GET /me/desk/sops``, which stays the source of truth.
+    """
+    action: str            # "add" | "patch" | "delete"
+    id: str | None = None
+
+
+class DeskLabelSyncPayload(BaseModel):
+    """Payload for DESK_LABEL_SYNC messages.
+
+    Sent server -> the registry-owning user whenever their label vocabulary
+    changes. Fanned out to EVERY live session the owner holds
+    (``WSHub.send_to``), so a label renamed in one browser tab updates in all
+    the others without a reload. The originating session receives it too; the
+    resulting refetch is idempotent.
+
+    Carries the action + the affected slug; the full list is fetched via
+    ``GET /me/desk/labels``, which stays the source of truth.
+
+    TWO THINGS THE CLIENT CANNOT INFER FROM THIS SHAPE, both of which cost real
+    time if missed:
+
+    1. **These envelopes arrive from more than the six registry endpoints.** A
+       ``POST`` or ``PATCH`` of a *to-do* carrying an unregistered slug
+       auto-registers it and emits ``{action: "add", slug}``. A client that
+       wires its registry refetch only to the registry endpoints' own round
+       trips holds a stale registry after its OWN capture, and renders a label
+       it just adopted as dashed-unregistered.
+
+    2. **``delete`` and ``merge`` change BOTH documents, so they send TWO
+       envelopes** — ``DESK_TODO_SYNC`` first, then this one, mirroring the
+       write order. Refetching only the registry shows correct groups over
+       stale items. The ordering is fixed rather than incidental: the transient
+       frame it produces is a registry listing a label no item carries, which
+       renders as an empty group the rail already handles. The reverse order
+       produces the alarming transient instead — every chip on the plate
+       resolving against a row that is already gone, i.e. rendered
+       dashed-unregistered for a frame.
+
+    ``into`` is populated on ``merge`` only. Without it, ``{action: "merge",
+    slug: "offce"}`` does not say what ``offce`` became, so "a filter on a
+    merged label follows the merge" would be implementable in the originating
+    tab (which can read ``into`` off the HTTP response) and would degrade to
+    "filter cleared" in every other tab.
+    """
+    action: str            # "add" | "patch" | "reorder" | "delete" | "merge"
+    slug: str | None = None
+    into: str | None = None   # merge only — the slug the source folded into
+
+
+class DeskReadStateSyncPayload(BaseModel):
+    """Payload for DESK_READ_STATE_SYNC messages.
+
+    Sent server -> the desk-owning user whenever they upsert a My Desk
+    read-state watermark via ``PUT /me/desk/read-state`` (single-user
+    fan-out — the owner's own sessions only). Unlike the cursor-only desk /
+    brief sync payloads, this carries the full row so an already-open device
+    can merge the watermark live without a follow-up GET: the frontend applies
+    it directly (last-writer-wins on ``updated_at``) and also invalidates its
+    read-state query.
+
+    ``updated_at`` is the identical string stored on the row and returned in
+    the PUT 200 body, so the confirming device and every other session merge on
+    one clock.
+    """
+    project_id: str
+    chatroom_name: str            # e.g. "user-communication"
+    last_seen_message_id: str     # "__dismissed__" allowed
+    updated_at: str               # ISO-8601 UTC; == the PUT 200 body's updated_at
+
+
+class RunnerVersion(BaseModel):
+    """One live runner in a ``RUNNER_VERSIONS`` snapshot.
+
+    ``version`` is the string the runner reported in its WebSocket handshake,
+    or ``None`` when it sent no version field (an older release) or could not
+    determine one. It is NEVER the string ``"unknown"`` — ``None`` is the
+    single undeterminable signal, and the client's matcher keys off it.
+
+    Declared with no default so a caller cannot construct a record that omits
+    the version: ``model_dump(mode="json")`` then always emits ``"version":
+    null`` rather than dropping the key, which is what lets the client read
+    ``version`` without optional chaining.
+    """
+    id: str
+    name: str
+    version: str | None
+
+
+class RunnerVersionsPayload(BaseModel):
+    """Payload for RUNNER_VERSIONS messages — see the enum member's warning.
+
+    Every runner the recipient user owns that holds at least one live socket.
+    Offline runners are ABSENT, not ``null``-versioned: nothing persists a
+    reported version, so a version not backed by a live socket does not exist.
+
+    **Full snapshot, never a delta.** The client replaces its list wholesale,
+    which makes the push idempotent — the duplicate push during a runner
+    reconnect is harmless and a reconnecting browser is always fully resynced.
+
+    ``runners`` is REQUIRED and carries NO DEFAULT, deliberately. Two reasons:
+
+    1. It is the strongest encoding of the wire contract's "the ``runners`` key
+       is always present". A field that cannot be omitted cannot be omitted.
+    2. ``ControlEnvelope.payload`` is a NON-discriminated Union — a payload
+       parsed from a dict resolves to the first member whose shape fits, and
+       every existing member is saved only by having at least one required
+       field. A ``default_factory=list`` here would leave this model with zero
+       required fields, so it would match ANY dict — including the empty
+       ``{}`` payload that rides every inbound HEARTBEAT frame.
+
+    For the same reason this member is appended LAST among the typed union
+    members.
+    """
+    runners: list[RunnerVersion]
+
+
+class InstallSyncPayload(BaseModel):
+    """Payload for INSTALL_SYNC — see the enum member.
+
+    A cursor, like :class:`HostSyncPayload`: it says the user's one-command
+    install reported a new step, and the browser refetches
+    ``GET /me/install-progress``. The step itself is NOT carried here — the run is
+    defined in one place (the route) and a pushed copy could only be a second one
+    to keep in step.
+
+    ``step`` and ``state`` are named anyway, and required, for two reasons: a
+    payload with no required fields would match every dict and so could not be
+    appended safely to ``ControlEnvelope.payload``'s non-discriminated Union (see
+    that docstring), and they make a websocket trace readable without joining it
+    against a REST call.
+    """
+
+    step: str
+    state: str
+
+
+class HostSyncPayload(BaseModel):
+    """Payload for HOST_SYNC — see the enum member.
+
+    ``action`` is why the browser is being woken, not an instruction:
+
+    - ``connected`` / ``disconnected`` — the machine's socket opened or closed.
+      This is the pair that makes "your computer is on, but none of your agents
+      are running" expressible at all.
+    - ``state`` — the machine re-reported which of its agents are running.
+    - ``renamed`` / ``revoked`` / ``paired`` — the user changed something from a
+      browser, possibly a different one of their own tabs.
+
+    Both fields are required, which is what keeps this member safe to append to
+    ``ControlEnvelope.payload``'s non-discriminated Union (see that docstring):
+    a model with no required fields would match every dict, including the empty
+    payload on an inbound HEARTBEAT.
+    """
+
+    host_id: str
+    action: str
+
+
+class AgentEnvRequestPayload(BaseModel):
+    """Payload for AGENT_ENV_REQUEST — see the enum member.
+
+    ``action`` is ``list`` / ``set`` / ``unset``. ``key`` is set for the two
+    writes, ``value`` only for ``set``. ``request_id`` pairs the runner's HTTP
+    answer with the browser request the server is holding open; it is also the
+    required field no other payload has, which keeps this member distinguishable
+    when appended to ``ControlEnvelope.payload``'s non-discriminated Union.
+
+    SECURITY: ``value`` is the secret the user typed. Delivered ONLY to the
+    agent's own runner; never logged, never echoed back.
+    """
+    agent_id: str
+    request_id: str
+    action: str  # "list" | "set" | "unset"
+    key: str | None = None
+    value: str | None = None
+
+
+class IsolationRecheckRequestPayload(BaseModel):
+    """Payload for ISOLATION_RECHECK_REQUEST — see the enum member.
+
+    ``recheck_id`` pairs the runner's result with the request; it is also the
+    required field no other payload has, which keeps this member
+    distinguishable in ``ControlEnvelope.payload``'s non-discriminated Union.
+    """
+    agent_id: str
+    recheck_id: str
+
+
+# Advertised in a socket's auth frame (``capabilities``) by clients that act on
+# RESYNC. A client without it is closed with 1012 instead, and reconnects.
+RESYNC_CAPABILITY = "resync"
+
+
+class ResyncPayload(BaseModel):
+    """Payload for RESYNC — see the enum member.
+
+    ``scope`` ``full`` is everything a reconnect does (in-flight turns, skill /
+    MCP / knowledge-pack sync, changelog catch-up); ``changelog`` is the
+    changelog catch-up alone, for when only changelog / active-work notices
+    were lost. The client first waits ``uniform(0, jitter_s)`` so a whole
+    deployment does not catch up in the same second. ``scope`` and ``reason``
+    have no defaults, which keeps this member distinguishable in
+    ``ControlEnvelope.payload``'s non-discriminated Union.
+    """
+    scope: Literal["full", "changelog"]
+    reason: Literal["core_restart", "outbox_overflow"]
+    jitter_s: float = 15.0
+
+
+class ControlEnvelope(BaseModel):
+    """Lightweight WebSocket notification - never carries file content.
+
+    NOTE on ``payload``: this is a plain (non-discriminated) Union, so a
+    payload *constructed* as a model instance keeps its exact type, but a
+    payload *parsed from a dict* resolves to the first member whose shape
+    fits. Structurally identical siblings — today ``DeskTodoSyncPayload`` and
+    ``DeskSopSyncPayload``, both ``{action, id}`` — are therefore not
+    distinguishable on re-parse, and the leftmost wins.
+    ``DeskLabelSyncPayload`` is keyed on ``slug`` rather than ``id``, but it
+    sits after both of them for the same reason and offers no more protection:
+    extra keys are ignored, so a ``{action, slug}`` dict still re-parses as the
+    leftmost member. It is appended, not inserted. This is harmless on
+    the outbound path, which only ever ``model_dump``s (see
+    ``server/routes/websocket.py``), and on the inbound path, which only ever
+    carries HEARTBEAT. Anything that starts re-validating stored envelopes
+    would need a real discriminator first.
+    """
+    type: ControlMessageType
+    payload: Union[ChangelogUpdatePayload, AgentStatusChangePayload, ProjectDeletedPayload, SkillSyncPayload, McpSyncPayload, AgentSettingsChangePayload, CancelLLMPayload, ActiveWorkChangePayload, McpAuthUrlForUserPayload, McpAuthCodePayload, SkillAuthUrlForUserPayload, SkillAuthCodePayload, KnowledgePackSyncPayload, AgentRegistryChangePayload, AgentCardUpdatePayload, BriefTabSyncPayload, ProjectReportSyncPayload, ProjectPlanSyncPayload, DeskTodoSyncPayload, DeskReadStateSyncPayload, DeskSopSyncPayload, DeskLabelSyncPayload, RunnerVersionsPayload, HostSyncPayload, InstallSyncPayload, AgentEnvRequestPayload, IsolationRecheckRequestPayload, ResyncPayload, dict] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_required_fields_for_type(self) -> "ControlEnvelope":
+        # Enforce typed payloads for each message type
+        if self.type == ControlMessageType.CHANGELOG_UPDATE:
+            if not isinstance(self.payload, ChangelogUpdatePayload):
+                raise ValueError(f"control message type {self.type} requires ChangelogUpdatePayload")
+        elif self.type == ControlMessageType.AGENT_STATUS_CHANGE:
+            if not isinstance(self.payload, AgentStatusChangePayload):
+                raise ValueError(f"control message type {self.type} requires AgentStatusChangePayload")
+        elif self.type == ControlMessageType.PROJECT_DELETED:
+            if not isinstance(self.payload, ProjectDeletedPayload):
+                raise ValueError(f"control message type {self.type} requires ProjectDeletedPayload")
+        elif self.type == ControlMessageType.SKILL_SYNC:
+            if not isinstance(self.payload, SkillSyncPayload):
+                raise ValueError(f"control message type {self.type} requires SkillSyncPayload")
+        elif self.type == ControlMessageType.MCP_SYNC:
+            if not isinstance(self.payload, McpSyncPayload):
+                raise ValueError(f"control message type {self.type} requires McpSyncPayload")
+        elif self.type == ControlMessageType.AGENT_SETTINGS_CHANGE:
+            if not isinstance(self.payload, AgentSettingsChangePayload):
+                raise ValueError(f"control message type {self.type} requires AgentSettingsChangePayload")
+        elif self.type == ControlMessageType.CANCEL_LLM:
+            if not isinstance(self.payload, CancelLLMPayload):
+                raise ValueError(f"control message type {self.type} requires CancelLLMPayload")
+        elif self.type == ControlMessageType.ACTIVE_WORK_CHANGE:
+            if not isinstance(self.payload, ActiveWorkChangePayload):
+                raise ValueError(f"control message type {self.type} requires ActiveWorkChangePayload")
+        elif self.type == ControlMessageType.MCP_AUTH_URL_FOR_USER:
+            if not isinstance(self.payload, McpAuthUrlForUserPayload):
+                raise ValueError(f"control message type {self.type} requires McpAuthUrlForUserPayload")
+        elif self.type == ControlMessageType.MCP_AUTH_CODE:
+            if not isinstance(self.payload, McpAuthCodePayload):
+                raise ValueError(f"control message type {self.type} requires McpAuthCodePayload")
+        elif self.type == ControlMessageType.SKILL_AUTH_URL_FOR_USER:
+            if not isinstance(self.payload, SkillAuthUrlForUserPayload):
+                raise ValueError(f"control message type {self.type} requires SkillAuthUrlForUserPayload")
+        elif self.type == ControlMessageType.SKILL_AUTH_CODE:
+            if not isinstance(self.payload, SkillAuthCodePayload):
+                raise ValueError(f"control message type {self.type} requires SkillAuthCodePayload")
+        elif self.type == ControlMessageType.KNOWLEDGE_PACK_SYNC:
+            if not isinstance(self.payload, KnowledgePackSyncPayload):
+                raise ValueError(f"control message type {self.type} requires KnowledgePackSyncPayload")
+        elif self.type == ControlMessageType.AGENT_REGISTRY_CHANGE:
+            if not isinstance(self.payload, AgentRegistryChangePayload):
+                raise ValueError(f"control message type {self.type} requires AgentRegistryChangePayload")
+        elif self.type == ControlMessageType.AGENT_CARD_UPDATE:
+            if not isinstance(self.payload, AgentCardUpdatePayload):
+                raise ValueError(f"control message type {self.type} requires AgentCardUpdatePayload")
+        elif self.type == ControlMessageType.BRIEF_TAB_SYNC:
+            if not isinstance(self.payload, BriefTabSyncPayload):
+                raise ValueError(f"control message type {self.type} requires BriefTabSyncPayload")
+        elif self.type == ControlMessageType.PROJECT_REPORT_SYNC:
+            if not isinstance(self.payload, ProjectReportSyncPayload):
+                raise ValueError(f"control message type {self.type} requires ProjectReportSyncPayload")
+        elif self.type == ControlMessageType.PROJECT_PLAN_SYNC:
+            if not isinstance(self.payload, ProjectPlanSyncPayload):
+                raise ValueError(f"control message type {self.type} requires ProjectPlanSyncPayload")
+        elif self.type == ControlMessageType.DESK_TODO_SYNC:
+            if not isinstance(self.payload, DeskTodoSyncPayload):
+                raise ValueError(f"control message type {self.type} requires DeskTodoSyncPayload")
+        elif self.type == ControlMessageType.DESK_READ_STATE_SYNC:
+            if not isinstance(self.payload, DeskReadStateSyncPayload):
+                raise ValueError(f"control message type {self.type} requires DeskReadStateSyncPayload")
+        elif self.type == ControlMessageType.DESK_SOP_SYNC:
+            if not isinstance(self.payload, DeskSopSyncPayload):
+                raise ValueError(f"control message type {self.type} requires DeskSopSyncPayload")
+        elif self.type == ControlMessageType.DESK_LABEL_SYNC:
+            if not isinstance(self.payload, DeskLabelSyncPayload):
+                raise ValueError(f"control message type {self.type} requires DeskLabelSyncPayload")
+        elif self.type == ControlMessageType.RUNNER_VERSIONS:
+            if not isinstance(self.payload, RunnerVersionsPayload):
+                raise ValueError(f"control message type {self.type} requires RunnerVersionsPayload")
+        elif self.type == ControlMessageType.HOST_SYNC:
+            if not isinstance(self.payload, HostSyncPayload):
+                raise ValueError(f"control message type {self.type} requires HostSyncPayload")
+        elif self.type == ControlMessageType.INSTALL_SYNC:
+            if not isinstance(self.payload, InstallSyncPayload):
+                raise ValueError(f"control message type {self.type} requires InstallSyncPayload")
+        elif self.type == ControlMessageType.AGENT_ENV_REQUEST:
+            if not isinstance(self.payload, AgentEnvRequestPayload):
+                raise ValueError(f"control message type {self.type} requires AgentEnvRequestPayload")
+        elif self.type == ControlMessageType.ISOLATION_RECHECK_REQUEST:
+            if not isinstance(self.payload, IsolationRecheckRequestPayload):
+                raise ValueError(f"control message type {self.type} requires IsolationRecheckRequestPayload")
+        elif self.type == ControlMessageType.RESYNC:
+            if not isinstance(self.payload, ResyncPayload):
+                raise ValueError(f"control message type {self.type} requires ResyncPayload")
+        return self

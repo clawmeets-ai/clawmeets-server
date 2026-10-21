@@ -1,0 +1,1151 @@
+/* The Plan tab's two shared controls. Everything else is Tailwind on the
+   component, matching ProjectReportTab's register; these two exist because a
+   button repeated twenty times across five files is a class, not a string. */
+
+.plan-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  background: #fff;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 150ms, border-color 150ms, color 150ms;
+}
+
+.plan-btn:hover:not(:disabled) {
+  background: var(--bg-sidebar-section);
+  color: var(--ink-1);
+}
+
+.plan-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.plan-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Icon-only. The tray's row-remove ✕ sits in a 20px-tall list line; the
+   text button's padding would make the row taller than the text it removes. */
+.plan-btn--icon {
+  gap: 0;
+  padding: 4px;
+}
+
+.plan-btn--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--ink-on-accent);
+  font-weight: 700;
+}
+
+.plan-btn--primary:hover:not(:disabled) {
+  border-color: var(--accent-deep);
+  background: var(--accent-deep);
+  color: var(--ink-on-accent);
+}
+
+/* The house pattern for a submitting primary: it goes soft, not translucent,
+   so `Sending…` stays readable on it. */
+.plan-btn--primary:disabled {
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+  color: #fff;
+  opacity: 1;
+}
+
+/* ————————————————— the section diff, in GitHub's clothes —————————————————
+   diff2html ships its own stylesheet and its own visual language, and the two
+   diverge from GitHub in ways that are not a matter of taste. Everything below
+   is one job: make the rendered diff read the way github.com renders a diff,
+   using diff2html's own variables and selectors rather than a fork of it.
+
+   THE FOUR REAL DIVERGENCES, since they are what the rules answer:
+
+   1. diff2html has a THIRD line category. A line it considers *edited* rather
+      than purely removed/added gets `.d2h-change` on top of `.d2h-del`/`.d2h-ins`
+      and is painted amber (`--d2h-change-del-color`) on the removal side and
+      olive (`--d2h-change-ins-color`) on the addition side. In a PROSE diff —
+      which is what a plan section is — nearly every line is "edited", so almost
+      nothing ever reached the plain red/green a reader expects. GitHub has no
+      such category, so the two change tokens below deliberately collapse onto
+      the plain ones instead of getting a colour of their own.
+   2. Its palette is not GitHub's, and the word-level marks are saturated
+      enough to out-shout the row they sit on. Every value below was read off
+      github.com's own `--diffBlob-*` custom properties, not eyeballed.
+   3. Its typography and gutter are its own: 13px Menlo, a 7.5em right-aligned
+      number column, no gap after the +/- marker. GitHub is 12px/24px
+      `ui-monospace`, two centred 40px number columns, 8px after the marker.
+   4. ITS LAYOUT ASSUMES SOURCE CODE, in the two ways that make a prose diff
+      unreadable rather than merely un-GitHub-like: the line-number cell is
+      `position: absolute` with no containing block of its own, so it drifts off
+      its row and escapes the panel's clip entirely; and the line is `nowrap`,
+      so an acceptance criterion is cut mid-word at the panel edge with nothing
+      but an overlay scrollbar to find. Both are answered below — the gutter
+      becomes an ordinary `table-cell`, and the line wraps. GitHub reaches the
+      same place with a soft-wrap TOGGLE, defaulted off; there is no toggle here
+      because there is no reading of a plan section for which nowrap is right.
+
+   Values, as GitHub currently defines them:
+     line       #ffebe9 removed   #dafbe1 added   #ddf4ff hunk header
+     numbers    #ffcecb           #aceebb
+     word mark  #ffcecb           #aceebb        (one step deeper than the row —
+                                                  the SAME tint as the numbers)
+   Light only, and that is not an oversight: `tailwind.config.js` sets no
+   `darkMode`, `tokens.css` defines every surface once in `:root`, and nothing
+   in `src/` carries a `prefers-color-scheme` block. `planContrast.test.ts`
+   asserts that rather than assuming it, so the day a dark surface theme lands
+   that suite fails and these values get revisited with it.
+
+   WHAT THIS DOES NOT REPRODUCE, because none of it is a colour: GitHub's file
+   header (hidden below on purpose — a plan SECTION is not a file path), its
+   "expand hidden lines" control (it needs the whole file; the server sends a
+   diff), syntax highlighting (a plan section is prose), and its per-line
+   comment affordances. */
+.plan-diff {
+  max-width: 100%;
+
+  --d2h-bg-color: #fff;
+  --d2h-border-color: #d1d9e0;
+  --d2h-line-border-color: #d1d9e0;
+  --d2h-dim-color: #59636e;
+
+  --d2h-del-bg-color: #ffebe9;
+  --d2h-change-del-color: #ffebe9;
+  --d2h-del-highlight-bg-color: #ffcecb;
+  --d2h-del-border-color: #ffcecb;
+  --d2h-del-label-color: #cf222e;
+
+  --d2h-ins-bg-color: #dafbe1;
+  --d2h-change-ins-color: #dafbe1;
+  --d2h-ins-highlight-bg-color: #aceebb;
+  --d2h-ins-border-color: #aceebb;
+  --d2h-ins-label-color: #1a7f37;
+
+  --d2h-info-bg-color: #ddf4ff;
+  --d2h-info-border-color: #ddf4ff;
+}
+
+.plan-diff .d2h-file-header {
+  display: none;
+}
+
+/* With the header hidden, the wrapper IS the panel — so it carries GitHub's
+   container chrome. `margin-bottom` goes because diff2html's 1em assumes a
+   stack of files and there is only ever one section here. */
+.plan-diff .d2h-file-wrapper {
+  margin-bottom: 0;
+  border: 1px solid #d1d9e0;
+  border-radius: 6px;
+  background: #fff;
+  overflow: hidden;
+}
+
+/* The UA's `td { padding: 1px }` is load-bearing in the wrong direction: it
+   shrinks the number cell's CONTENT box to 78px, and the two 40px halves below
+   then no longer fit side by side — the second wraps under the first and hides
+   behind the next row. Zeroing it is what makes the gutter a gutter. */
+.plan-diff .d2h-diff-table td {
+  padding: 0;
+}
+
+.plan-diff .d2h-diff-table {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+  font-size: 12px;
+  line-height: 24px;
+  color: #1f2328;
+}
+
+/* GitHub's gutter: two centred 40px columns, no rule between them. diff2html
+   emits ONE cell holding a floated pair, which lands in the same place because
+   both halves of a row always carry the same tint. `direction` reverts from its
+   `rtl` (there for ellipsising long numbers) since centred text has no side to
+   truncate from.
+
+   THE FIRST THREE DECLARATIONS PUT THE CELL BACK IN THE TABLE, and they are the
+   whole of the escaping-gutter fix. diff2html ships
+   `.d2h-code-linenumber { display: inline-block; position: absolute }` and NO
+   containing block for it, so the cell resolves against whatever positioned
+   ancestor the mount happens to have — `.plan-body` here, since the quote
+   composer needs it (`position: relative`, below). Two things follow from that,
+   and both are visible: the number is placed by its containing block rather
+   than by its own row, so it drifts off the line it labels the moment anything
+   between the two scrolls; and the panel's `overflow: hidden` CANNOT clip it,
+   because overflow only clips descendants whose containing block is inside the
+   clipping box and this one's is above it — which is how line numbers end up
+   painted over the card's footer.
+
+   An in-flow `table-cell` has no containing block to resolve against and no way
+   to leave its row, so neither failure is reachable any more. `position` has to
+   be said out loud rather than left to `display` alone: an absolutely
+   positioned box is BLOCKIFIED, so `display: table-cell` on its own is silently
+   computed back to `block` and nothing changes. `min-width` is load-bearing
+   with it: auto table layout will otherwise squeeze this column to the 40px
+   min-content of one floated half, because the code column's min-content is the
+   whole line. `vertical-align: top` is what pins the number
+   to the FIRST visual line of a row that wraps (see `.d2h-code-line-ctn`),
+   which is where GitHub puts it. */
+.plan-diff td.d2h-code-linenumber {
+  position: static;
+  display: table-cell;
+  vertical-align: top;
+  width: 80px;
+  min-width: 80px;
+  padding: 0;
+  border-width: 0;
+  direction: ltr;
+  text-align: center;
+  color: #59636e;
+}
+.plan-diff .line-num1,
+.plan-diff .line-num2 {
+  width: 40px;
+  padding: 0;
+  text-align: center;
+}
+
+/* The one place a variable is not enough: diff2html paints the number cell with
+   the ROW's colour, GitHub darkens it a step so the numbers stay separable
+   where changed rows stack. `td` is in the selector only to beat diff2html's own
+   `.d2h-file-diff .d2h-del.d2h-change`, which is otherwise the same weight and
+   would win on source order. */
+.plan-diff td.d2h-code-linenumber.d2h-del {
+  background-color: #ffcecb;
+}
+.plan-diff td.d2h-code-linenumber.d2h-ins {
+  background-color: #aceebb;
+}
+.plan-diff td.d2h-code-linenumber.d2h-info {
+  background-color: #ddf4ff;
+}
+
+/* GitHub's 24px inset, now on both sides. The old left value was 104px — the
+   80px gutter PLUS the inset — because the gutter used to float over this cell
+   rather than sit beside it; the cell above is a real column now, so the
+   reserved 80px would only double-indent the text. The width goes with it:
+   diff2html's `calc(100% - 16em)` was paired with an 8em it no longer has, and
+   an explicit width here is what made the line box narrower than its own
+   content. `block` rather than diff2html's `inline-block` so a wrapped
+   continuation cannot start a new line box below the marker. */
+.plan-diff .d2h-code-line {
+  display: block;
+  padding: 0 24px;
+  width: auto;
+  white-space: normal;
+}
+
+/* GitHub reserves 8px after the +/- marker; diff2html sets the glyph flush
+   against the text. The float is what keeps the marker on the first line of a
+   wrapped row instead of letting it ride along with the text. */
+.plan-diff .d2h-code-line-prefix {
+  float: left;
+  padding-right: 8px;
+}
+
+/* A PLAN SECTION WRAPS, BECAUSE IT IS PROSE. diff2html sets `white-space: pre`
+   under a `nowrap` line and expects you to scroll sideways — right for source
+   code, wrong for an acceptance criterion the user is being asked to approve:
+   in the compact desk card every long line is cut at the panel edge mid-word,
+   and the only affordance is an overlay scrollbar that is invisible until you
+   are already dragging it. `pre-wrap` keeps the leading whitespace a diff
+   depends on while letting the line break; `anywhere` is for the tokens prose
+   still carries that no space can break — a path, a URL, a slug.
+
+   `overflow: hidden` is here for the BLOCK FORMATTING CONTEXT, not for
+   clipping: it is what makes the wrapped lines clear the floated +/- marker and
+   align under the first one, rather than tucking under it. */
+.plan-diff .d2h-code-line-ctn {
+  display: block;
+  overflow: hidden;
+  width: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The word mark is a flat fill on GitHub. diff2html rounds and lifts it, which
+   at prose density reads as a separate chip floating over the row rather than
+   as emphasis within it. */
+.plan-diff .d2h-code-line del,
+.plan-diff .d2h-code-line ins {
+  border-radius: 0;
+  margin-top: 0;
+}
+
+/* diff2html dims the hunk header's text to 30% black; on GitHub's blue it is
+   ordinary ink. */
+.plan-diff .d2h-info {
+  color: #1f2328;
+}
+
+/* L2(b) — THE FULL MOUNT'S GUTTER, for the editor's own write outcomes. The
+   revision banner, the success notice and the failure line moved into
+   `.plan-editor` with the code that produces them; on the Plan tab they used to
+   render inside the header's `px-6` wrapper, so without this they sit flush at
+   x=0 while every line above them is inset 24px. Padding `.plan-editor` itself
+   would be wrong — that insets the 224px section rail and its right border too,
+   which are meant to run to the pane's edge. THE COMPACT MOUNT IS DELIBERATELY
+   GUTTERLESS and is excluded here: the band is already inset by the card. */
+.plan-editor:not(.plan-editor--compact) > .plan-outcome {
+  margin-left: 24px;
+  margin-right: 24px;
+}
+
+/* ————————————————— the compact mount ————————————————— */
+/* `PlanEditor` at `density="compact"` — the desk card's PLAN band. These rules
+   are the WHOLE of the difference beyond the two markup switches the component
+   makes (rail → <select>, History hidden): the editor is the same component,
+   the same routes and the same guards on both mounts, and this file must not
+   grow a rule that changes what a control DOES on one of them. */
+.plan-editor--compact {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-top: 8px;
+  border-top: 1px solid var(--line-1);
+  padding-top: 8px;
+}
+
+/* The section rail's compact form. A <select> rather than a 224px column
+   because the band is the width of a card, not of a tab — and because a native
+   select is already keyboard- and screen-reader-complete, which a hand-built
+   listbox at this size would have to re-earn. */
+.plan-section-select {
+  width: 100%;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--ink-2);
+  background: var(--bg-card);
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.plan-section-select:hover { border-color: var(--line-strong); }
+.plan-section-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* The tray used to dock INLINE at the end of the band and round off the card's
+   bottom corners. It is `.plan-cl`'s footer now, in the middle of the band
+   rather than at its end, and `.plan-cl` carries its own `border-radius` — so
+   the rule that rounded it here would round a box that is no longer last. */
+
+/* ————————————————— notes in the document ————————————————— */
+/* Values are the design's, taken from `sidebar-redesign-prd.css` verbatim
+   (`.prd-mark` 118-120, `.prd-pop*` 204-219). The PREFIX is not: this file's
+   classes are `.plan-*`, and `prd-` is the identifier the reconciliation
+   retired — the ledger's D3 closed on "Plan" over "PRD". Same rules, this
+   codebase's name for them. */
+
+/* The host is the popover's containing block, so `.plan-pop`'s absolute
+   coordinates are measured against the document rather than the viewport —
+   which is what lets the composer stay put while the pane scrolls. */
+.plan-body {
+  position: relative;
+}
+
+/* A NOTED BLOCK, PAINTED AS THE BLOCK IT IS.
+
+   This replaces `.plan-mark`, which was `border-bottom: 1px dashed` on a run of
+   characters, and the dashed underline is deleted rather than restyled. It was
+   a SUBSTRING-scope decoration carrying BLOCK-scope content, and that mismatch
+   was the complaint: an agent note filed with `--section` derives its quote
+   from a whole source LINE, so the underline already spanned a full rendered
+   paragraph — and a paragraph that wraps drew the dashes raggedly across every
+   line of it, next to no note. Nothing is underlined now.
+
+   IT IS ON THE BLOCK'S OWN RUN, NOT ON THE BLOCK ELEMENT. `.plan-b` would be
+   the obvious place and it is the wrong one: an outer list item's element
+   contains its nested bullets, so tinting it would claim a subtree the note is
+   not about. The span wraps exactly the children the block owns — see
+   `splitOwnChildren`.
+
+   `box-decoration-break: clone` is what makes it survive a wrap: without it a
+   run spanning three lines gets ONE box, so the padding and the rounded corners
+   land only at the two ends and the middle lines bleed to the edges. `cursor`
+   is deliberately absent — the paint is not a control, and a click on it is a
+   click on the block, which opens the editor like any other prose. */
+.plan-noted {
+  background: var(--accent-softer);
+  border-left: 2px solid var(--accent-soft);
+  border-radius: 0 3px 3px 0;
+  padding: 1px 3px 1px 5px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* THE BLOCK BEING COMMENTED ON RIGHT NOW — the standing highlight that took
+   the quote preview's job off the popover. It says "this is the block you are
+   writing about", which is the one thing the reprinted quote was telling the
+   user and the only reason it was there.
+
+   A DIFFERENT TREATMENT FROM `.plan-noted` ABOVE, DELIBERATELY, and the two are
+   siblings rather than alternatives. That paint tints the words a FILED note is
+   about; this outlines the block a note is BEING WRITTEN about. A block can be
+   both at once and then wears both — the tint on its words, inside the outline
+   around them — because they are different properties on different elements and
+   neither is in a position to erase the other. Same accent so they read as one
+   family, stronger weight because this is the transient state and the one the
+   user is looking at.
+
+   `outline` RATHER THAN `border`, and that is not a style preference. A border
+   is part of the box, so adding one on open would reflow every line below it —
+   the words the user came to comment on would shift out from under a popover
+   that was just positioned against them. An outline is drawn outside the box
+   and takes no space, so the document does not move. It matches the offset the
+   editable block's `:focus-visible` ring uses, so a block that is focused and
+   commented on draws one ring rather than two at different radii. */
+.plan-b--commenting {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* An anchored note, directly beneath the block it quotes. */
+.plan-anchored {
+  margin: 6px 0 10px;
+}
+
+/* THE NOTES WHOSE LINE IS GONE — at the end of their own section, never at the
+   bottom of the document, and never dropped. The left border is the same
+   gutter the design gives `.prd-sec-cmts`. */
+.plan-sec-loose {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 10px;
+  padding-left: 14px;
+  border-left: 1px solid var(--line-2);
+}
+.plan-loose-why {
+  font-size: 10.5px;
+  color: var(--ink-4);
+  margin-bottom: 2px;
+}
+
+/* Picking a note out of the comment list lights it up where it lives. */
+.plan-note--focused {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* ————————————————— the quote composer ————————————————— */
+.plan-pop {
+  position: absolute;
+  width: 330px;
+  z-index: 40;
+  background: #fff;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  padding: 10px;
+}
+.plan-pop-in {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  padding: 7px 9px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink-1);
+  outline: 0;
+}
+.plan-pop-in:focus {
+  border-color: var(--accent-soft);
+  box-shadow: 0 0 0 3px var(--accent-softer);
+}
+.plan-pop-warn {
+  color: var(--warn, #b45309);
+}
+
+.plan-pop-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 9px;
+}
+.plan-pop-hint {
+  font-size: 10.5px;
+  color: var(--ink-4);
+}
+.plan-pop-acts {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+/* ————————————————— editing a block where it stands ————————————————— */
+/* Values are the design's, taken from `sidebar-redesign-prd.css` (`.prd-ed`
+   192-193, `.prd-b-tools` 58-61, `.prd-edit` 77, `.prd-b.is-edited` 71). What
+   is NOT ported is the prototype's `contentEditable` — see `PlanBlockEdit`'s
+   header for why the field here is a real textarea. */
+
+/* A block that CAN be edited says so on hover and on nothing else: a document
+   under review is read far more often than it is written, and a permanent
+   affordance on every paragraph would read as a form. */
+.plan-b {
+  border-radius: 4px;
+  transition: background var(--t-fast);
+}
+.plan-b--live {
+  cursor: text;
+}
+.plan-b--live:hover {
+  background: var(--bg-card-selected);
+}
+/* THE HOVER HAS TO AGREE WITH THE CLICK, and since change 2 it would not on its
+   own. A container is editable now, so an inner bullet is inside an editable
+   outer item and hovering the inner one hovers BOTH — two nested backgrounds in
+   the same colour paint as one block, so the user is shown the whole outer item
+   tinted and then gets only the inner one when they click. The rule below is the
+   visual half of "the innermost editable block under the pointer wins": an
+   ancestor drops its tint while a live descendant has the pointer.
+
+   IT IS AN OVERRIDE RATHER THAN A `:not()` ON THE RULE ABOVE, and that is what
+   makes it degrade well: this is the codebase's first `:has()`, and a browser
+   that does not understand it drops THIS declaration and keeps the plain hover,
+   which is exactly the behaviour of the milestone before this one. Folding the
+   condition into the rule above would instead drop the highlight entirely. */
+.plan-b--live:hover:has(.plan-b--live:hover) {
+  background: transparent;
+}
+/* TWO BACKGROUNDS IN ONE PLACE, AND THE NOTE'S WINS. A block carrying an open
+   note is painted (`.plan-noted`, above) and is ALSO an editable tab stop with
+   its own hover tint, in a neighbouring shade of the same purple. Shown
+   together they read as one smeared surface and neither is legible.
+
+   The block stays editable — this suppresses the ADVERTISEMENT, not the
+   behaviour. Click and Enter are untouched, `:focus-visible` below still draws
+   its ring (a keyboard user has nothing else to go on), and the moment the note
+   is answered, applied, rejected or dismissed the paint goes and the hover tint
+   comes back on its own. */
+.plan-b--live.plan-b--noted:hover {
+  background: transparent;
+}
+/* THE BLOCK IS A TAB STOP NOW, so it has to show where the focus is. The pencil
+   used to be the only keyboard route into a block edit and it drew its own ring;
+   deleting it without this would leave a keyboard user tabbing through an
+   invisible cursor. `:focus-visible` rather than `:focus` — a mouse click on
+   prose opens the editor outright, so a ring on that path would flash on a
+   block that is already gone. */
+.plan-b--live:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  background: var(--bg-card-selected);
+}
+
+/* THE TOOLBAR IS THE QUOTE PATH — one button, the comment bubble. It used to
+   carry the pencil too and to be the ONLY keyboard route into a block edit;
+   that route is now the block itself, which is a tab stop and opens on Enter.
+   What is left still has to be reachable: it is a real <button> in tab order, so
+   `:focus-within` reveals it or a keyboard user would be operating a control
+   they cannot see. `opacity` rather than `display:none` for the same reason — a
+   hidden button is not focusable.
+
+   IT FLOWS AFTER THE TEXT, and that is the one place the design's own rule is
+   NOT ported. `.prd-b-tools` is `float:right` inside a flex row, which works
+   there because every prototype block is a fixed-height row. These blocks are
+   PROSE: a float would sit at the top-right of the paragraph and the first line
+   would wrap around ~50px of invisible buttons, permanently, on every
+   paragraph in the document. Absolute positioning trades that for the buttons
+   painting over the end of the first line. Flowing inline after the last word
+   costs neither — at worst it wraps one trailing line, and it can never cover a
+   word. `user-select` keeps a drag-select of the paragraph from picking the
+   toolbar up. */
+.plan-b-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
+  user-select: none;
+  transition: opacity var(--t-fast);
+}
+/* THE REVEAL IS A POINTER AFFORDANCE, SO IT ONLY EXISTS WHERE THERE IS A
+   POINTER. A touch device has no hover to spend, so a bubble that appears only
+   on hover is a bubble that does not exist there — the one capture affordance
+   in the document, unreachable. `hover: hover` is the same gate the sidebar
+   rows use for their own hover-revealed buttons. Nothing below changes: those
+   rules still run on a pointer device, and on touch the bubble is already at
+   full opacity so they are no-ops. Layout is identical either way — `opacity`
+   never took the bubble out of flow. */
+@media (hover: hover) {
+  .plan-b-tools {
+    opacity: 0;
+  }
+}
+.plan-b:hover > .plan-b-tools,
+.plan-b:focus-within > .plan-b-tools {
+  opacity: 1;
+}
+/* THE TOOLBAR IS DELIBERATELY NOT NARROWED THE SAME WAY. Hovering a nested item
+   reveals its own bubble AND its ancestors', which is one more affordance than
+   strictly wanted — but the two bubbles sit at different places (the inner one
+   after the inner text, the outer one after the whole nested list) and carry
+   different accessible names, so they are distinguishable. Suppressing the
+   ancestor's would have to spare the case where that ancestor's own bubble
+   holds focus, and the selector that says so is more fragile than the ambiguity
+   it removes: a bubble hidden while it is on the focus path is a control a
+   keyboard user is operating and cannot see. The background above is the
+   affordance that had to be fixed, because two nested tints in one colour paint
+   as a single block and cannot be told apart at all. */
+.plan-b-tool {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-2);
+  background: var(--bg-card);
+  color: var(--ink-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.plan-b-tool:hover {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+}
+.plan-b-tool:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* A CODE FENCE OR A TABLE, WITH ITS BUBBLE BESIDE IT RATHER THAN INSIDE IT.
+
+   `.plan-b-tools` is a `<span>` and the browser refuses it in both blocks: the
+   HTML parser fosters it straight out of a `<table>`, and inside a `<pre>` it
+   lands in the code text, where it is selectable and copied. So those two —
+   commentable since notes became block-scoped, and neither of them editable —
+   render inside this wrapper, which carries the bubble as a SIBLING of the
+   block.
+
+   THE GUTTER IS RESERVED RATHER THAN OVERLAID, and that is the whole reason for
+   `padding-right`. Absolutely positioning the bubble over the figure's top-right
+   corner would cover the first line of a code fence or a header cell, which is
+   the same objection the prose toolbar's own comment raises against floating it.
+   A fixed gutter costs a little width on every fence and table permanently and
+   covers nothing, ever — and because it is permanent there is no layout shift
+   when the bubble fades in. */
+.plan-b-fig {
+  position: relative;
+  padding-right: 26px;
+}
+.plan-b-fig > .plan-b-tools {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  margin-left: 0;
+}
+/* The reveal, restated for the wrapper: the bubble is not a descendant of
+   `.plan-b` here, so the `>` rules above cannot reach it. `:focus-within` for
+   the same reason it is there — a hidden button is not a focusable one. */
+.plan-b-fig:hover > .plan-b-tools,
+.plan-b-fig:focus-within > .plan-b-tools {
+  opacity: 1;
+}
+
+/* The document's own checkbox, made real. Sized and aligned to sit where
+   remark-gfm's disabled input sat, so ticking a box does not reflow the line. */
+.plan-tick {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  margin-right: 6px;
+  vertical-align: baseline;
+  border-radius: 3px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-card);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.plan-tick:hover {
+  border-color: var(--accent);
+}
+.plan-tick.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The in-place field. It sits in the document flow where the block was, so it
+   must not be taller than its content — `PlanBlockEdit` sizes it to the text
+   and this only supplies the box. */
+.plan-block-edit {
+  margin: 2px 0;
+}
+.plan-block-ta {
+  width: 100%;
+  display: block;
+  resize: none;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-1);
+  background: var(--bg-card);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 4px 7px;
+  outline: 0;
+}
+.plan-block-ta:focus {
+  border-color: var(--accent-soft);
+  box-shadow: 0 0 0 3px var(--accent-softer);
+}
+.plan-block-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--ink-4);
+}
+
+/* ————————————————— operating a note where it sits ————————————————— */
+/* An anchored note is SUBORDINATE TO THE LINE ABOVE IT and still has to be a
+   legible surface. `background: transparent` was the first half of that
+   sentence taken on its own: the note dissolved into the document, and the one
+   thing inside it that has to be read — the amber "this section changed"
+   warning — was painted on the page rather than on anything.
+
+   `--bg-card-selected` IS THE WHOLE FIX, AND IT IS ONE DECLARATION IN ONE RULE.
+   It is a token, so there is no hex here to drift from the palette, and it
+   needs no dark-mode twin — `tokens.css` defines every surface token once, in
+   `:root`, with no `prefers-color-scheme` or `.dark` override anywhere in the
+   tree, so this resolves identically in both themes by construction rather than
+   by a second rule. `planContrast.test.ts` pins that: it resolves this token out
+   of `tokens.css` and fails if a dark redefinition ever appears, because the day
+   one does, this rule needs revisiting rather than silently inverting.
+
+   IT IS DELIBERATELY LIGHTER THAN THE LIST BELOW THE DOCUMENT. Those notes are
+   `bg-sidebar` (#f3edf7); this is #f6f1fb, a lighter tint of the same family.
+   Down there a note has no line to be subordinate to and gets the full card;
+   up here the tint is 1.11:1 against the page — enough to read as a surface,
+   not enough to outrank the prose it hangs under. The token's name says
+   "selected" and this is not a selection: `.plan-note--focused` marks that, and
+   it marks it on the LEFT BORDER (below), which is a different channel
+   entirely, so the two can never be confused for one another.
+
+   THE LEFT ACCENT BAR SURVIVES AND IS STILL THE BOUNDARY. A 1.11:1 fill is a
+   surface, not an edge; the 2px `--line-2` bar is what actually separates the
+   note from the document, which is why it keeps its own rule and why the
+   corners are square on that side and rounded on the other three. The fill
+   also means the text can no longer run to the right edge, so the padding
+   grew on that side — with `transparent` there was no edge for it to run to. */
+.plan-anchored .plan-note {
+  border: 0;
+  border-left: 2px solid var(--line-2);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--bg-card-selected);
+  padding: 5px 9px 5px 10px;
+}
+.plan-anchored .plan-note--focused {
+  border-left-color: var(--accent);
+  box-shadow: none;
+}
+
+/* ONE GROUP, ONE HELP LINE. The bar carried TWO labelled groups because
+   `Dismiss` and `Dismiss now` sat side by side, one word apart and irreversibly
+   different. `Apply now`, `Resolve` and `Dismiss now` are gone and `Reply`
+   stages, so every control here batches and a label that splits a set into one
+   group and an empty one is noise. The labels went with them; the one line of
+   help that is left is now true of the whole bar. */
+.plan-note-acts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  min-width: 0;
+}
+.plan-note-staged {
+  min-width: 0;
+}
+.plan-note-grp-b {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.plan-note-grp-h {
+  font-size: 10px;
+  color: var(--ink-4);
+}
+
+/* ————————————————— APPROVE / REVOKE, WHERE THE PLAN IS READ —————————————————
+   ITS OWN STRIP, AND THE PLACEMENT IS THE ARGUMENT. This control writes on the
+   CLICK. It sits at the top of the editor, above the write outcomes, OUTSIDE
+   `.plan-tray` and OUTSIDE `.plan-note-acts` — whose one line of help promises
+   that nothing reaches the plan or its addressees until you submit, and would
+   start lying about the button beside it.
+   `--compact` is layout and only layout: the desk band is narrow, so the strip
+   loses its padding and its rule. Whether the control EXISTS is not density's
+   to decide. */
+.plan-approve {
+  /* `flex: none` FOR THE SAME REASON `.plan-cl` IS BOUNDED — see the long
+     comment there. This strip is a child of `.plan-editor`'s fixed-height
+     column and sits above the pane row, so it may never be a source of
+     unabsorbed height. It is short by construction, but "short today" is not
+     the invariant; "not flexible" is. */
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 0 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line-2);
+}
+.plan-approve--compact {
+  padding: 0 2px 6px;
+  margin-bottom: 6px;
+}
+.plan-approve-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.plan-approve-chip {
+  font-size: 11px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: var(--bg-sidebar, var(--bg-card));
+  color: var(--ink-3);
+}
+.plan-approve-chip.on {
+  background: color-mix(in srgb, var(--ok, #10b981) 15%, transparent);
+  color: var(--ok, #047857);
+}
+.plan-approve-warn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--warn, #b45309);
+}
+/* THE COMMENT LIST (`PlanCommentList`). It was `.plan-dev`, the deviation
+   alarm, whose rules these still are — the box, the row, the one-line clamp and
+   the footer are unchanged bar the prefix. What changed is WHEN it is red: the
+   list now holds every open comment, so `--alarm` paints it urgent only while a
+   deviation is among them. Painting the whole box red for an ordinary question
+   is how an alarm stops meaning anything. */
+.plan-cl {
+  /* BOUNDED BY CONSTRUCTION, AND THAT IS THE WHOLE STRUCTURAL FIX.
+     `.plan-editor` is a FIXED-HEIGHT column (`flex-1 min-h-0`) whose pane row
+     is `flex: 1 1 0%` — base size 0, so its SCALED shrink factor is 0 and the
+     one child that exists to give up height gives up none. `PlanTray` below is
+     `shrink-0`. So when a child above the pane row is unbounded, the squeeze
+     has nowhere to land: the content overflows the bottom of the column and
+     `ProjectView`'s `overflow-hidden` clips it, with no `overflow-y: auto`
+     anywhere in the chain to scroll it back. `Send review` went off the screen
+     exactly that way, and this box — printing a multi-thousand-character
+     deviation comment under `min-height: auto`, whose block-axis minimum IS the
+     content height — was what made the space negative.
+     `flex: none` + a hard `max-height` + its own scroller mean this box CANNOT
+     exceed its cap however many comments there are and however long each one
+     is. The invariant it restores is declared at the call site (`PlanEditor`):
+     every child above the pane row is bounded and `shrink-0`, so the pane row
+     is the only flexible item and negative free space cannot arise.
+     THE CAP IS LARGER THAN THE ALARM'S WAS (five rows rather than three)
+     because the list is a superset of what the alarm held. It is still a hard
+     number and still scrolls — a cap that grew with the count would be no cap.
+     The tray's own item list is gone, so this is the only scroller of rows on
+     the screen and nothing is duplicated by widening it.
+
+     THE ROWS SCROLL AND THE FOOTER DOES NOT, and that split is the whole reason
+     this is a flex column that CLIPS rather than a block that scrolls. The send
+     bar is this box's footer now (`.plan-cl-foot`). Leave `overflow-y: auto`
+     here and `Send review` scrolls out of the top of the box with the rows —
+     which is, exactly, the failure the paragraph above is about, re-entered
+     from the other side. So: `overflow: hidden` here, one scroller inside
+     (`.plan-cl-rows`), and a footer that is `flex: none`.
+
+     THE CAP WENT 230px -> 320px -> 256px, AND THE LAST MOVE IS A SHRINK THAT
+     SHOWS MORE ROWS. It rose to 320px to pay for the footer, which was then
+     ~170-190px: an `h-14` batch-comment textarea, the Send row, the `cannot be
+     unwritten` line and up to two cap warnings. The textarea is gone
+     (`PlanTray` — the field asked for a covering note on a surface where you
+     can already edit the plan inline and comment on any paragraph), so the
+     footer is ~64px lighter and the rows get MORE of a smaller box: ~130px
+     before, ~150px now, five rows to six.
+     It is still a HARD number and the rows still scroll; a cap that grew with
+     the count would be no cap, and the invariant this box exists to keep would
+     be gone with it. */
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  max-height: 256px;
+  overflow: hidden;
+  padding: 5px 7px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-sidebar, var(--bg-card));
+  border-radius: var(--r-sm);
+  margin-bottom: 10px;
+}
+/* RED ONLY WHILE A DEVIATION IS OPEN. */
+.plan-cl--alarm {
+  border-color: var(--prio-urgent-fg);
+  background: var(--prio-urgent-bg);
+}
+/* THE ONLY SCROLLER IN THIS BOX. `min-height: 0` is load-bearing, not tidiness:
+   a flex child's block-axis automatic minimum is its CONTENT height, so without
+   it this refuses to shrink below its rows, the column grows past its
+   `max-height`, and the footer is pushed out of a box that clips — Send off the
+   screen again, by a third route. Same trap `.plan-editor` documents. */
+.plan-cl-rows {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* THE FOOTER — the pending line, the submit promise, and the send bar. Never
+   scrolls, never shrinks. */
+.plan-cl-foot { flex: none; }
+/* THE SEND BAR STAYS NEUTRAL EVEN WHILE THE BOX IS RED. `--alarm` paints the
+   container urgent because a deviation is open; a red Send bar reads as a
+   warning about SENDING, which is not what is wrong. The red belongs to the
+   deviation ROW. */
+.plan-cl-foot .plan-tray {
+  background: var(--bg-card);
+  /* Bleeds to the box's edges — `.plan-cl` pads 5px/7px and the bar is a
+     footer, not an inset panel. NO RADIUS OF ITS OWN: `.plan-cl` is
+     `overflow: hidden` with `border-radius: var(--r-sm)`, so it already clips
+     this to its own corners, and a second number here is one more place for
+     the two to drift apart. */
+  margin: 4px -7px -5px;
+}
+/* THE DIRECTION HEADING — "Waiting on you" / "Waiting on @keeper" / "Recorded,
+   not sent". It scrolls WITH its rows rather than sticking, deliberately: this
+   box clips at a hard `max-height` and a sticky heading inside the one scroller
+   spends that budget on a label instead of on comments. The groups are short
+   and the first one is the one that matters, so it is already on screen. */
+.plan-cl-grp {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 6px 0 3px;
+}
+/* NO TOP MARGIN ON THE FIRST ONE — it sits directly under the box's own padding
+   and a second gap there reads as a stray blank line. */
+.plan-cl-rows > div:first-child > .plan-cl-grp { margin-top: 0; }
+/* THE ROW AND ITS UNDO, side by side. The ✕ is a SIBLING of the routing button
+   rather than a child of it: a button inside a button is invalid HTML, the
+   browser un-nests it, and the click then routes AND unstages. */
+.plan-cl-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+.plan-cl-item--superseded { opacity: 0.55; }
+.plan-cl-x { flex: none; margin-top: 4px; }
+/* THE ROW IS A BUTTON — it routes to the comment, it does not decide it. */
+.plan-cl-row {
+  display: flex;
+  gap: 9px;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: flex-start;
+  text-align: left;
+  padding: 4px 4px;
+  border-radius: var(--r-sm);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.plan-cl-row:hover {
+  background: color-mix(in srgb, var(--ink-1) 7%, transparent);
+}
+.plan-cl--alarm .plan-cl-row:hover {
+  background: color-mix(in srgb, var(--prio-urgent-fg) 10%, transparent);
+}
+.plan-cl-row:focus-visible {
+  outline: 2px solid var(--prio-urgent-fg);
+  outline-offset: -2px;
+}
+.plan-cl-where {
+  /* The one line here that is PROSE rather than a summary, so it wraps. The
+     container's `max-height` still bounds it. */
+  white-space: normal;
+  text-wrap: pretty;
+  padding: 3px 4px 1px;
+  border-top: 1px solid var(--line-2);
+  margin-top: 4px;
+}
+.plan-cl--alarm .plan-cl-where {
+  border-top-color: color-mix(in srgb, var(--prio-urgent-fg) 25%, transparent);
+}
+.plan-cl-ic {
+  flex: none;
+  color: var(--ink-4);
+  display: inline-flex;
+  padding-top: 1px;
+}
+/* THE ONE PLACE URGENCY IS SPELLED PER ROW, so a neutral question sitting under
+   a deviation is legibly not one. */
+.plan-cl-ic.on { color: var(--prio-urgent-fg); }
+.plan-cl-b { min-width: 0; display: block; flex: 1 1 auto; }
+.plan-cl-t {
+  /* ONE LINE, ALWAYS. `noteSummary` already caps the text at 120 chars; this is
+     the LAYOUT's guarantee rather than the reader's, so a summary that somehow
+     gets long still cannot grow the box a second time. */
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+  font-weight: 800;
+  line-height: 1.4;
+  color: var(--ink-1);
+}
+/* WHICH QUESTION A REPLY ROW ANSWERS (`PlanCommentList`). One line, quieter
+   than the comment above it and louder than the locator below. */
+.plan-cl-re {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--ink-2);
+  margin-top: 2px;
+}
+.plan-cl-s {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--ink-3);
+  margin-top: 3px;
+}
+.plan-cl-warn { margin-left: 6px; color: var(--warn, #b45309); }
+.plan-cl-sup { margin-left: 6px; }
+/* NO OPACITY RULE, AND THAT IS THE DIFFERENCE FROM `.plan-cl-sup`'s row. A
+   folded row's text is in the write that lands; dimming it would read as
+   discarded. */
+.plan-cl-fold { margin-left: 6px; }
+/* "DOESN'T HOLD THE WORK" — the row in your group that the desk card's
+   `N for you` pill and the execution gate are NOT counting. Deliberately the
+   quietest badge on the line: it is a fact about consequence, not a warning
+   (`.plan-cl-warn`) and not a strike-through (`.plan-cl-sup`'s dimmed row). The
+   note is still open, still addressed to you and still wants an answer; it just
+   is not what the project is stopped on. */
+.plan-cl-quiet { margin-left: 6px; color: var(--ink-4); }
+/* THE STAGED DECISION, RIGHT-ALIGNED — `accept` / `reject` / `reply` /
+   `dismiss`, or `waiting to send`. It DISPLAYS the decision; the ✕ beside it
+   takes it back. Neither offers one: a comment is decided on its own card,
+   next to its diff, and nowhere else. */
+.plan-cl-chip {
+  flex: none;
+  align-self: center;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: var(--bg-card, var(--bg-sidebar));
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* THE ANCHOR IDENTIFIER ON A NOTE'S HEADER ROW (`PlanNoteRow`). The token the
+   quote opens with — `AC-2.1`, `M2` — hoisted out of the blockquote so the card
+   says WHICH clause without spending a line on it.
+   MONOSPACE BECAUSE IT IS AN IDENTIFIER: it is read by matching it against the
+   document character for character, and at this size a proportional face stops
+   distinguishing `1` from `l` and `0` from `O`.
+   IT IS NOT `.plan-cl-chip`, deliberately, and the two must not be merged. That
+   chip shouts a DECISION in uppercase on a filled pill; this one names a clause
+   and must stay quieter than the note it labels — uppercasing it would also
+   destroy the very thing it exists to carry, since an identifier's case is part
+   of it. What it borrows is only the geometry. */
+.plan-note-anchor {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: var(--bg-card, var(--bg-sidebar));
+  border: 1px solid var(--line-2);
+  color: var(--ink-2);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* THE NOTE COMMENT'S CLAMP (`PlanNoteRow`'s `NoteComment`). Twelve lines, then
+   `Show all`. A deviation comment runs to thousands of characters and it was
+   burying the note's own decision bar under a screenful of prose.
+   `-webkit-line-clamp` is the only cross-browser line clamp there is; it is
+   unprefixed nowhere that matters and both properties are required together. */
+.plan-note-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 12;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* A REPLY, DRAWN AS ONE: the note it answers on top, the reply hanging under it
+   on a rail (`.plan-note-parent` + `.plan-note-reply-body`). One level, never recursive —
+   the threading deletion stands; this only makes "they asked → you said" read
+   top-down instead of as two stacked quotes. */
+.plan-note-parent {
+  margin: -2px 0 8px;
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  background: var(--bg-sidebar);
+  border: 1px dashed var(--line-2);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.plan-note-parent-head {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+.plan-note-parent-body {
+  margin-top: 2px;
+  font-style: italic;
+}
+.plan-note-reply-body {
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line-2);
+}
+
+/* THE EXCERPT A NOTE IS ANCHORED TO, labelled `on` so it can never be mistaken
+   for the note it answers (that is `.plan-note-parent`, above it). */
+.plan-note-on {
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.plan-note-on-label::before {
+  content: attr(data-label);
+}
+.plan-note-on-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 6px;
+  color: var(--ink-3);
+}

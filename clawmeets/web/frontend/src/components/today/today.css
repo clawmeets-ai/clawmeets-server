@@ -1,0 +1,113 @@
+/* /today page — shell + class surface that the per-tab render bodies
+   reference via lib.row / lib.rowWithTime / lib.renderEmpty (etc).
+   Class names here are the agent-facing contract — keep in sync with
+   the § Styling contract section of `skills/today/SKILL.md`.
+
+   Tokens deliberately mirror the React shell's color system. Most of the
+   page chrome (hero, tab strip) is Tailwind on the React side; the
+   classes below are reserved for inside-the-pane HTML the render
+   bodies produce. */
+
+:root {
+  --today-accent: #6b2aa0;
+  --today-accent-deep: #52217b;
+  --today-fg: #111827;
+  --today-muted: #6b7280;
+  --today-border: #ececec;
+  --today-warn: #b45309;
+  --today-warn-bg: #fef3c7;
+}
+
+/* Row primitives (lib.row / lib.rowWithTime output). */
+
+.today-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 14px 0;
+  border-top: 1px solid var(--today-border);
+  gap: 16px;
+}
+.today-row:first-of-type {
+  border-top: 0;
+}
+.today-row__title {
+  font-weight: 600;
+  color: var(--today-fg);
+}
+.today-row__meta {
+  color: var(--today-muted);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.today-row__right {
+  text-align: right;
+  color: var(--today-muted);
+  font-size: 13px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Calendar-style row: narrow time column on the left, body on the right. */
+.today-row--timed {
+  align-items: flex-start;
+}
+.today-row__time {
+  flex: 0 0 88px;
+  color: var(--today-fg);
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.25;
+}
+.today-row__duration {
+  display: block;
+  margin-top: 2px;
+  color: var(--today-muted);
+  font-weight: 400;
+  font-size: 12px;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+
+/* Empty / error placeholders (lib.renderEmpty + the shell's per-pane
+   try/catch). */
+
+.today-empty {
+  color: var(--today-muted);
+  font-size: 14px;
+  padding: 12px 0;
+}
+.today-err {
+  color: var(--today-warn);
+  background: var(--today-warn-bg);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  margin: 12px 0;
+}
+
+/* Anchor styling for lib.linkOrText. */
+
+a.today-link {
+  color: var(--today-accent);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+a.today-link:hover {
+  color: var(--today-accent-deep);
+  border-bottom-color: var(--today-accent-deep);
+}
+
+/* Print-to-PDF isolation for the project Report tab. During export, the live
+   report node is reparented to <body> and <body> is tagged with
+   `printing-report` (see ProjectReportTab.handleExport). We hide every other
+   top-level node so only the report prints; as a normal-flow child of <body>
+   with no clipping or absolutely-positioned ancestors, it paginates natively
+   across pages. Keyed on `report-print-*` classes, so inert on /today. */
+@media print {
+  body.printing-report > *:not(.report-print-root) {
+    display: none !important;
+  }
+  body.printing-report .report-print-hide {
+    display: none !important;
+  }
+}

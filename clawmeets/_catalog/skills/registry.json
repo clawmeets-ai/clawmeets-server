@@ -1,0 +1,166 @@
+[
+  {
+    "name": "web-artifacts",
+    "summary": "Build interactive single-file HTML dashboards and charts.",
+    "description": "Create interactive single-file HTML artifacts with React, Tailwind, and Chart.js",
+    "tags": ["frontend", "react", "ui", "dashboard"],
+    "version": "1.0.0",
+    "attribution": null
+  },
+  {
+    "name": "playwright-browser",
+    "summary": "Drive a real Chrome browser to do what WebFetch can't — logins, JS-rendered pages, and multi-step flows.",
+    "description": "Drive Chrome via Python playwright through `clawmeets browser` CLI subcommands (navigate/snapshot/click/fill/press-key/screenshot/wait-for, plus start/stop/auth) when WebFetch can't do the job — login required, JavaScript-rendered UI, or multi-step interaction. Optional fast path: `clawmeets browser start` runs one long-lived browser per agent (a tab per project) so actions auto-route to it with no cold start and login stays live; the agent may start it but never stops it (user-managed). Two-tier state: agent-level `--storage <name>` identity (signed in via `clawmeets browser start` or `auth`) + project-level `--session <dir>` working state (default `$PWD/.playwright-session`). Setup: `clawmeets bootstrap browser` once per runner; sign in per agent identity via `clawmeets browser start --storage <name>`. Pairs with `playwright-save-skill`.",
+    "tags": ["browser", "automation", "playwright", "web"],
+    "version": "1.0.0",
+    "attribution": null
+  },
+  {
+    "name": "playwright-save-skill",
+    "summary": "Turn a successful browser session into a replayable saved skill.",
+    "description": "Crystallize a successful `playwright-browser` explore (prior turn drove `clawmeets browser` CLI subcommands via Bash; recording lives at `$CLAWMEETS_AGENT_DIR/personal-skill-hub/_explore/<task-id>/recording.md`) into a single SKILL.md replayable as `/personal:<name>`. Translates the recorded steps into a mix of natural-language judgment (where intent generalizes) and concrete `clawmeets browser` CLI invocations (where mechanism is deterministic). Shows the candidate markdown to the user for review before saving; verify-replay confirms it reproduces the explore output. Skip for non-Playwright work — let `/clawmeets:reflect`'s Promote handle that.",
+    "tags": ["browser", "playwright", "skill-authoring"],
+    "version": "1.0.0",
+    "attribution": null
+  },
+  {
+    "name": "photo-story",
+    "summary": "Build Spotify-Wrapped-style photo story pages and curate big libraries down to the best shots.",
+    "description": "Build animated single-file HTML 'year story' / 'trip story' artifacts (Spotify-Wrapped style) and run the curator funnel that gets a 1k–10k photo library down to ~50 keepers without melting context. Two halves in one skill.",
+    "tags": ["photos", "memories", "html", "animation", "scrollytelling"],
+    "version": "1.0.0",
+    "attribution": null
+  },
+  {
+    "name": "brief",
+    "summary": "Publish and refresh briefing tiles in My Desk's Scheduled briefings.",
+    "description": "Tab publishing protocol for My Desk's Scheduled briefings. Any agent can populate a briefing on its own cadence — gather data, write a short render JS body (function(mount, data, lib)), and shell `clawmeets brief upsert-tab <slug>` to upload. My Desk composes all uploaded tabs into a tile strip; each tab tracks its own last_refreshed_at. Invoked on two conditions: a '<!-- clawmeets:brief-tab-trigger:<slug> -->' marker (per-tab cron path), or a direct request to publish/refresh/update a briefing. No central config — briefings are discovered by presence.",
+    "tags": ["briefing", "daily", "html", "publishing"],
+    "version": "1.0.0",
+    "attribution": null
+  },
+  {
+    "name": "gmail",
+    "summary": "Read, search, send, and archive Gmail messages.",
+    "description": "Read, search, send, and archive Gmail messages via `clawmeets gmail {search,get,labels,attachment,send,archive,auth,revoke}` Bash subcommands. Archive removes the INBOX label (reversible with `archive --undo`; nothing is deleted). These commands only fetch and act — where fetched mail is stored, how it is deduplicated, and how incremental fetches are tracked is up to the agent's SOP. Requires Google OAuth — Authenticate via Agent Settings → Skills → gmail before first use. Token resolves from `$CLAWMEETS_AGENT_DIR/skill-hub/state/gmail/`.",
+    "tags": ["google", "email", "communication"],
+    "version": "1.0.0",
+    "attribution": "Built on google-api-python-client",
+    "auth": {
+      "method": "google_oauth_installed",
+      "scopes": ["https://www.googleapis.com/auth/gmail.modify"],
+      "token_file": "token.json"
+    }
+  },
+  {
+    "name": "homekit",
+    "summary": "Control Apple HomeKit devices through macOS Shortcuts.",
+    "description": "Apple HomeKit via the macOS `shortcuts` CLI. Two subcommands: `clawmeets homekit list-shortcuts` to enumerate the user's Shortcuts and `clawmeets homekit run-shortcut \"<name>\"` to invoke one. macOS 12+ only. No OAuth, no config — the Shortcuts app is the contract.",
+    "tags": ["apple", "smart-home", "macos", "household"],
+    "version": "1.0.0",
+    "attribution": null
+  },
+  {
+    "name": "media",
+    "summary": "Generate image / audio / video from a text prompt.",
+    "description": "Generate media via `clawmeets media image|audio|video --prompt \"...\"`. Backend is chosen by `--provider` or the per-agent config (image: openai/gemini/nano-banana; audio: openai/elevenlabs/gemini TTS; video: replicate/fal gateways → Veo, Kling, ...). Settings resolve flag > config > env > default; keys + output_dir live in `$CLAWMEETS_AGENT_DIR/skill-hub/configs/media.json`. Returns `{media_path, media_type, provider, model, ...}` — the file lands on disk; share it with `update_file`. No OAuth.",
+    "tags": ["image", "audio", "video", "generation", "tts", "openai", "gemini", "elevenlabs", "replicate"],
+    "version": "1.0.0",
+    "attribution": null
+  },
+  {
+    "name": "google-calendar",
+    "summary": "List and manage Google Calendar events.",
+    "description": "Google Calendar (list / get / create / update / delete) via `clawmeets gcal {calendars,list-events,get,create,update,delete,auth,revoke}` Bash subcommands. These commands only fetch and act — where fetched events are stored, how they are deduplicated, and how incremental fetches are tracked is up to the agent's SOP. Requires Google OAuth — Authenticate via Agent Settings → Skills → google-calendar. Token resolves from `$CLAWMEETS_AGENT_DIR/skill-hub/state/google-calendar/`.",
+    "tags": ["google", "calendar", "scheduling"],
+    "version": "1.0.0",
+    "attribution": "Built on google-api-python-client",
+    "auth": {
+      "method": "google_oauth_installed",
+      "scopes": ["https://www.googleapis.com/auth/calendar"],
+      "token_file": "token.json"
+    }
+  },
+  {
+    "name": "google-drive",
+    "summary": "Search and read Google Drive files and Sheets (read-only).",
+    "description": "Google Drive read-only (search / read) via `clawmeets gdrive {search,get,auth,revoke}` Bash subcommands. Google Docs / Slides export as text, Sheets as first-tab TSV. These commands only fetch — where fetched files are stored, how they are deduplicated, and how incremental fetches are tracked is up to the agent's SOP. Requires Google OAuth (drive.readonly).",
+    "tags": ["google", "drive", "documents", "data"],
+    "version": "1.0.0",
+    "attribution": "Built on google-api-python-client",
+    "auth": {
+      "method": "google_oauth_installed",
+      "scopes": ["https://www.googleapis.com/auth/drive.readonly"],
+      "token_file": "token.json"
+    }
+  },
+  {
+    "name": "google-drive-write",
+    "summary": "Read and write rows in specific Google Sheets.",
+    "description": "Google Sheets read+write (per-target) via `clawmeets gdrive-write {read-rows,append-rows,update-cell,auth}`. Each named target binds one spreadsheet's tab + id-column. Separate from `google-drive` so the sheets-write OAuth scope is opt-in. No sync trigger — used inline by content-engine pipelines (e.g. marketing template's instagram agent: read brief → generate image → write back).",
+    "tags": ["google", "sheets", "marketing", "write"],
+    "version": "1.0.0",
+    "attribution": "Built on google-api-python-client",
+    "auth": {
+      "method": "google_oauth_installed",
+      "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
+      "token_file": "token.json"
+    }
+  },
+  {
+    "name": "mailbox",
+    "summary": "Read and send email over any IMAP/SMTP mailbox (no OAuth).",
+    "description": "IMAP+SMTP mailbox (search / read / attachment / send) via `clawmeets mailbox {list-folders,search,get,attachment,send}`. Provider-agnostic (Gmail app-password / iCloud / Fastmail / Outlook / ProtonMail Bridge / self-hosted). These commands only fetch and send — where fetched mail is stored, how it is deduplicated, and how incremental fetches are tracked is up to the agent's SOP. No OAuth — credentials via `${VAR}` env vars referenced from `$CLAWMEETS_AGENT_DIR/skill-hub/configs/mailbox.json`.",
+    "tags": ["email", "imap", "smtp"],
+    "version": "1.0.0",
+    "attribution": null
+  },
+  {
+    "name": "calendar",
+    "summary": "List and manage calendar events over any CalDAV server (no OAuth).",
+    "description": "CalDAV calendar (list / events / create / update / delete) via `clawmeets caldav {list,list-events,get,create,update,delete}`. Provider-agnostic (iCloud / Fastmail / Nextcloud / Radicale / SOGo / mailcow). These commands only fetch and act — where fetched events are stored, how they are deduplicated, and how incremental fetches are tracked is up to the agent's SOP. No OAuth — credentials via `${VAR}` env vars.",
+    "tags": ["calendar", "caldav", "scheduling"],
+    "version": "1.0.0",
+    "attribution": null
+  },
+  {
+    "name": "http-api",
+    "summary": "Call any HTTP/REST API, with cookie sessions and declared success checks.",
+    "description": "Generic HTTP client via `clawmeets http-api {get,post,put,patch,delete} <url>` with `-H` (env-expanded `$VAR`), `--query`, `--data` / `--json`, a curl-style cookie session jar (`--save-session` / `--session`), and `--expect-location` / `--expect-status` to declare what success looks like. These commands only fetch and act — where fetched data is stored, how it is deduplicated, and how incremental fetches are tracked is up to the agent's SOP. No config.",
+    "tags": ["http", "rest", "api"],
+    "version": "1.0.0",
+    "attribution": null
+  },
+  {
+    "name": "osxphotos",
+    "summary": "Read macOS Photos metadata and export photos as JPEG.",
+    "description": "macOS Photos library (read-only metadata + paths, plus ≤256KB JPEG export for vision Read) via `clawmeets osxphotos {list-albums,list-photos,export,export-jpeg}`. These commands only fetch — where fetched metadata is stored, how it is deduplicated, and how incremental fetches are tracked is up to the agent's SOP. macOS only; requires `osxphotos` + Full Disk Access on the Python interpreter.",
+    "tags": ["apple", "photos", "macos", "memories"],
+    "version": "1.0.0",
+    "attribution": "Built on osxphotos"
+  },
+  {
+    "name": "ib",
+    "summary": "Read-only Interactive Brokers: positions, cost basis, PnL, prices, and news for US equities and bonds.",
+    "description": "STRICTLY READ-ONLY Interactive Brokers integration. Fetches positions, cost basis, PnL, current prices, historic prices, and news for US equities and bonds via `clawmeets ib {positions,cost-basis,pnl,price,history,news-providers,news,news-article,doctor}`, talking to a human-operated TWS / IB Gateway over the ib_async socket API. No order/buy/sell/cancel path exists (CI-enforced by tests/test_ib_readonly_guard.py). Market data is LIVE by default; delayed data only under --allow-delayed and always tagged data_type=delayed. Missing paid subscriptions surface as a typed not_subscribed error, never empty data. Bonds resolve by CUSIP->conId and quote clean price with accrued interest reported as a separate field. IB pacing/rate limits are persisted on disk across the per-call processes. Connection coordinates (host/port/clientId/account, no credentials) resolve from $CLAWMEETS_AGENT_DIR/skill-hub/configs/ib.json.",
+    "tags": ["finance", "interactive-brokers", "read-only", "market-data"],
+    "version": "1.0.0",
+    "attribution": null
+  },
+  {
+    "name": "grill-me",
+    "summary": "Find the real question behind a decision before you spend a project on the wrong one.",
+    "description": "Narrows a fuzzy decision to the real question. In a DM: one question per turn, each building on the last answer, stopping at about 8 turns or once the brief stops changing, and ending in a five-part brief (decision, real question, current bet, evidence that would change my mind, out of scope) closed by the fixed line 'Real question changed from your first message: yes|no (self-graded)'. Inside a project: never interviews the user; reviews PLAN.md against the brief once before acceptance and the final report against 'evidence that would change my mind' once, with every objection naming the brief part a milestone fails to serve.",
+    "tags": ["thinking", "decision", "coaching"],
+    "version": "1.0.0",
+    "attribution": null
+  },
+  {
+    "name": "broaden-options",
+    "summary": "Widen your options when you're stuck, then narrow to the 2-3 worth testing.",
+    "description": "Asks for the user's ideas first and labels every idea [yours] or [mine]. Diagnoses why the user is stuck (too few ideas, options all alike, afraid of risk, too close to it) and generates with one matching technique at a time, without judging. Always adds the baselines do nothing / do both / one then the other, and stops generating when ideas repeat. Then narrows to 2-3 options screened on impact, effort and reversibility, each with the cheapest test that would show whether it works. Switches to grill-me first when the decision the options serve is unclear.",
+    "tags": ["thinking", "decision", "brainstorming"],
+    "version": "1.0.0",
+    "attribution": null
+  }
+]

@@ -1,0 +1,1343 @@
+# SPDX-License-Identifier: MIT
+"""
+clawmeets/models/project.py
+Project model with Active Record persistence methods.
+
+## Changelog-First Architecture
+
+Project is a **frozen** Pydantic model (`model_config = {"frozen": True}`).
+All mutations flow through the changelog (acting as a redo log), ensuring:
+1. Atomic recording on the server before any local writes
+2. Eventual consistency across all runners via sync
+3. Idempotent replay for crash recovery
+
+Direct mutation is prevented by the frozen config. Use `project.state()`
+to access ProjectState for changelog-driven writes.
+
+## Read/Write Separation
+
+- **Project** (frozen): Read-only data representation, path properties,
+  association methods for loading related objects
+- **ProjectState**: Handles all filesystem writes triggered by changelog
+  processing (create, complete, add_participant)
+
+This separation ensures changes are visible to other agents only after
+they flow through the distributed changelog system.
+"""
+from __future__ import annotations
+
+import os
+import re
+import unicodedata
+from datetime import UTC, datetime
+from pathlib import Path
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Callable, Literal, Optional
+
+from pydantic import BaseModel, Field, PrivateAttr, computed_field
+
+from ..sync.changelog import ProjectStatus
+from ..utils.file_io import FileUtil
+from .participant import Participant
+
+
+# Project surface — the explicit project shape.
+#   "regular"   — task-shaped project (PLAN.md / milestones / multi-party).
+#   "dm"        — owned 1:1 DM (a user with their OWN agent), single
+#                 user-communication room, DM prompt variant, auto-title.
+#   "frontdesk" — ONE END of a cross-account thread (Front Desk). Each end is a
+#                 distinct project OWNED (created_by) by that side and bound
+#                 1-to-1 to the other end by a TunnelBinding. The requester end's
+#                 coordinator is a foreign agent (an `external` ghost that never
+#                 runs locally); the host end's coordinator is that same foreign
+#                 agent running for real. "dm" and "frontdesk" are both
+#                 "dm-shaped" (see Project.is_dm_shaped).
+ProjectSurface = Literal["regular", "dm", "frontdesk"]
+
+# The plan lifecycle (§7, D13). **Derived, never stored, and deliberately NOT a
+# fourth ``ProjectStatus`` member** — a ``spec-ing`` *status* would break four
+# shipped call sites: ``messages.py:1081`` and ``tunnel_subscriber.py:598``
+# (a user commenting on their own un-accepted plan would flip it ACTIVE and end
+# the stage — fatal on its own), ``action_validator.py`` (wrong violation, wrong
+# reason) and ``ProjectView.tsx``'s ``statusVariant`` (missing key → undefined
+# badge). Status answers *is this running*; phase answers *what stage of the
+# plan is it in*, and they are different questions.
+ProjectPhase = Literal["spec-ing", "executing", "complete", "failed"]
+
+# Seeded label a fresh DM thread carries until its first exchange auto-titles it.
+# Doubles as the fire-once latch for the auto-title trigger (agent.py) and the
+# defensive ``expected_current`` sentinel on the rename endpoint — the trigger
+# runs only while ``display_name == NEW_CHAT_PLACEHOLDER`` and the mutation flips
+# it, so every later message reads a non-placeholder value and skips.
+NEW_CHAT_PLACEHOLDER = "New chat"
+
+# Max length of a thread display name, in Unicode CODE POINTS, measured AFTER
+# ``normalize_thread_display_name`` has run. The single source of truth for the
+# API, the frontend's inline counter, and the tests — when this number is
+# revisited it must be a one-line change here.
+#
+# 60 is not a UX preference, it is a coupling constraint: the DM auto-titler
+# (``models/agent.py:_clean_dm_title``, ``max_chars=60``) writes THIS field
+# through THAT route, so the storage ceiling must be >= the generation ceiling
+# or a shipped path starts 400-ing. See the plan's "why 60 and not 30". The
+# "keep it short" intent is expressed by the frontend's soft counter at 40, not
+# by a hard cap that breaks a shipped writer.
+THREAD_DISPLAY_NAME_MAX_LEN = 60
+
+# Invisible directional-formatting characters, stripped by
+# ``normalize_thread_display_name``. They render as nothing but reorder the
+# visible text around them, which makes a thread title a spoofing surface in
+# every sidebar that renders it. ZWJ (U+200D) and VS16 (U+FE0F) are deliberately
+# ABSENT: stripping every invisible would shatter emoji sequences (👨‍👩‍👧 would
+# render as three separate people).
+# Spelled with escapes on purpose: literal copies of these characters would be
+# invisible in this file and in every diff of it.
+_DISPLAY_NAME_BIDI_OVERRIDES = frozenset(
+    "\u200e\u200f"                                  # LRM, RLM
+    "\u202a\u202b\u202c\u202d\u202e"              # LRE, RLE, PDF, LRO, RLO
+    "\u2066\u2067\u2068\u2069"                    # LRI, RLI, FSI, PDI
+)
+
+
+def normalize_thread_display_name(raw: str) -> str:
+    """Canonicalize a user- or model-supplied thread name into its stored form.
+
+    Pipeline, in order — the order matters, since each step feeds the next:
+
+    1. NFC normalize, so ``e`` + U+0301 and ``é`` are one stored value with one
+       length. Without this, two visually identical names would disagree on
+       whether they fit under :data:`THREAD_DISPLAY_NAME_MAX_LEN`.
+    2. Drop the bidi overrides in :data:`_DISPLAY_NAME_BIDI_OVERRIDES` and the
+       Cc control characters — but NOT the Cc characters that are whitespace
+       (tab, newline, CR). Those are left for step 3 to turn into a space:
+       deleting them here instead would glue the words on either side together
+       (``"Trip\\tplan"`` -> ``"Tripplan"``).
+    3. Collapse every run of Unicode whitespace to a single U+0020 and strip
+       both ends. This IS the trim rule: ``"  Trip   plan \\n"`` stores as
+       ``"Trip plan"``.
+
+    Steps 1-3 rewrite silently — a trailing space is not an error, it is
+    normalized away. Only two conditions raise, and their messages are
+    user-facing verbatim (the route passes ``str(e)`` straight into
+    ``{"detail": ...}`` for inline display next to the input):
+
+    - empty after normalization
+    - longer than :data:`THREAD_DISPLAY_NAME_MAX_LEN` **code points**
+
+    Length is code points, not bytes and not grapheme clusters. A family emoji
+    is ~7 code points against the budget; a grapheme-aware count would need a
+    new dependency for a cosmetic gain. The frontend counts the same way
+    (``[...s].length``, NOT ``s.length``, which counts UTF-16 units and would
+    disagree above U+FFFF).
+
+    Pure and side-effect-free, so the route, the auto-title path and the tests
+    can all call it. It lives on the model rather than the route because it is
+    a rule about the *field*, not about HTTP.
+
+    Args:
+        raw: The submitted name, straight off the wire.
+
+    Returns:
+        The canonical value to persist.
+
+    Raises:
+        ValueError: Empty or over-length, carrying the user-facing message.
+    """
+    text = unicodedata.normalize("NFC", raw)
+    text = "".join(
+        ch
+        for ch in text
+        if ch not in _DISPLAY_NAME_BIDI_OVERRIDES
+        and not (unicodedata.category(ch) == "Cc" and not ch.isspace())
+    )
+    text = " ".join(text.split())
+
+    if not text:
+        raise ValueError("Thread name cannot be empty.")
+    if len(text) > THREAD_DISPLAY_NAME_MAX_LEN:
+        raise ValueError(
+            f"Thread name must be {THREAD_DISPLAY_NAME_MAX_LEN} characters or fewer."
+        )
+    return text
+
+
+# Front Desk / DM-shaped project name shape: ``{requester}-fd-{agent_short}``.
+# Mirrors the frontend FRONT_DESK_NAME_RE (web/frontend/src/types/index.ts).
+# Group 1 is the requester prefix (a username for user-requester channels, or a
+# requester agent's full name for cross-agent delegation).
+_FRONT_DESK_NAME_RE = re.compile(r"^([a-z0-9][a-z0-9_-]*)-fd-([a-z0-9][a-z0-9_-]*)$")
+
+
+if TYPE_CHECKING:
+    from .agent import Agent
+    from .context import ModelContext
+    from .chatroom import Chatroom
+
+
+def _as_aware_utc(dt: datetime) -> datetime:
+    """Coerce a datetime to timezone-aware UTC.
+
+    Timestamps in this system are written as UTC-aware isoformat strings, but a
+    legacy/hand-edited ``meta.json`` could carry a naive value. Normalizing
+    before any ``max()``/comparison avoids a ``TypeError`` from mixing aware and
+    naive datetimes.
+    """
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
+
+class Project(BaseModel):
+    """Project metadata with persistence and association methods.
+
+    A project represents a collaborative task with multiple chatrooms
+    and participating agents coordinated by a single coordinator agent.
+    """
+    model_config = {"frozen": True}
+
+    id: str
+    name: str
+    coordinator_id: str           # agent_id of coordinator
+    coordinator_name: str         # name of coordinator (avoids lookup on workers)
+    request: str                  # original user prompt
+    participating_agents: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_by: str               # user_id of creator (derived from auth)
+    agent_pool: str = Field(default="verified")  # "self", "owned", "verified", or "all". "self" = coordinator only (used by own-DM); the resolver returns an empty invitable list.
+    agent_teams: list[str] = Field(default_factory=list)  # Hard allowlist by user_team; pairs with agent_names. Empty teams + empty names = no filter (everyone in pool is invitable).
+    agent_names: list[str] = Field(default_factory=list)  # Hard allowlist by agent display name (id, full name, or owner-relative short name); pairs with agent_teams. OR semantics across both lists.
+    surface: ProjectSurface = "regular"  # Explicit project shape; "regular" | "dm"
+    display_name: Optional[str] = None    # Model-set human label (regular projects AND dm threads).
+                                          # None only on legacy/pre-migration rows -> callers render `name` (the slug).
+    # Who a host-side conversation serves, when it serves someone other than
+    # the owner: "hub:{root_fp}/{user_id}" | "account:{user_id}" |
+    # "channel:{conn}/{user_key}" | "project:{id}". Set at creation, never
+    # changed. A project with one is isolated (``is_isolated``): its turns are
+    # requester-scoped and the server hands it only to a sandbox-capable runner.
+    requester_key: Optional[str] = None
+    # Kept out of every durable input (recent activity, reflection, briefings,
+    # search). Never cleared once set.
+    memory_excluded: bool = False
+    # Holds outside content as a whole (hub DM threads; projects created from a
+    # restricted turn). Never cleared once set. Read from old data only: it no
+    # longer isolates (plan-owner-isolation section 3).
+    remote_content: bool = False
+    # The outside party of a requester end: a hub stand-in, or another
+    # account's agent on a same-server Front Desk requester thread. The owning
+    # user coordinates such a project (the own-coordinator rule).
+    counterpart_id: Optional[str] = None
+    counterpart_name: Optional[str] = None
+    last_request_ts: Optional[datetime] = None   # ts of the most recent non-ack USER message across the project.
+    last_response_ts: Optional[datetime] = None  # ts of the most recent non-ack AGENT/ASSISTANT message.
+    # ISO timestamp of the project's published completion report (mirrors
+    # report.json's ``generated_at``). None when no report exists — including a
+    # completed project that has no report. Non-null EXACTLY when
+    # ``GET /projects/{id}/report`` would return a real report. Denormalized into
+    # meta.json on report upsert/delete (ProjectState.set_report_published_at) so
+    # the list scan reads it from the single meta.json read it already performs —
+    # no per-project report.json read (avoids the N+1). A stored field, not a
+    # @computed_field: a computed field re-reading report.json on every Project
+    # load would re-introduce that N+1 in list_all. Default None keeps it
+    # back-compatible for any meta.json predating the key. Rides model_dump() into
+    # GET /projects (admin list) and GET /projects/{id} (detail) with no route change.
+    report_published_at: Optional[datetime] = None
+    # ISO timestamp of the most recent write to this project's ``PLAN.md`` or its
+    # ``plan.json`` sidecar (D5, §6). Denormalized into meta.json **outside the
+    # changelog**, exactly as ``report_published_at`` is and for the same reason:
+    # the project list can badge "awaiting your acceptance" or sort on plan
+    # recency from the single meta.json read it already performs, with no
+    # per-project fetch of the plan. None on a project whose plan has never been
+    # touched, including every project that predates the feature — a stored
+    # field with a None default needs no migration and no backfill.
+    #
+    # NOT a @computed_field: re-deriving it would mean opening plan.json on every
+    # ``Project`` load, which is the N+1 the field exists to avoid.
+    plan_updated_at: Optional[datetime] = None
+
+    # ---- the plan lifecycle projection (D13, §7.2) --------------------------
+    # Five stored facts that make ``phase`` a pure function of owned fields and
+    # make the execution gate (§7.4) answerable from a runner's own meta.json.
+    #
+    # **They ride the changelog** (``PROJECT_PLAN_STATE``), unlike
+    # ``report_published_at`` / ``plan_updated_at`` above, and that difference is
+    # the whole point: those two are read by the *server's* project list, while
+    # these are read by the *runner* — in ``build_state_snapshot`` and in the
+    # coordinator's steady-state prompt block. A direct meta.json write on the
+    # server reaches no runner, so a gate built on one is inert in production.
+    # The sidecar (``plan.json``, server-side only) stays the source of truth;
+    # these are its projection, published from exactly one place.
+    #
+    # Written by ``init_plan_sidecar`` and by NOTHING else (§3.5, property 3):
+    # a project that predates this feature never gets one, so it reads
+    # ``executing`` and behaves exactly as it does today — no backfill, no scan,
+    # and a plan a human wrote by hand is never called un-specified.
+    plan_seeded_at: Optional[datetime] = None
+    plan_accepted_at: Optional[datetime] = None
+    # 0 is the "never accepted" sentinel and is kept INTERNAL — the wire nulls it
+    # (ruling 6.2, F-1), so nothing serializes ``accepted at revision 0``.
+    plan_accepted_revision: int = 0
+    # ``spec_digest`` as it read at acceptance. Paired with the synced PLAN.md it
+    # answers "did the spec move since acceptance" with no sidecar read.
+    plan_accepted_spec_digest: str = ""
+    # The projection of ``project_plan.open_notes_for_you`` — §3.3's ONE number,
+    # carried to the one process that cannot open the sidecar. Never recounted
+    # anywhere; a second implementation is the drift §3.3 refuses.
+    plan_open_notes: int = 0
+    # The projection of ``ProjectPlan.first_user_review_at``: when the OWNER
+    # first opened a review round on this plan. That is the spec lock's start
+    # line before acceptance, and the coordinator's steady-state prompt states
+    # the constraint off this field. **Monotone** — the publisher never clears
+    # it (``plan_state_spec``), because the one thing a coordinator must never
+    # be told is that the lock has lifted. ``None`` on every project that
+    # predates the field and on every plan the user has not looked at yet.
+    plan_user_reviewed_at: Optional[datetime] = None
+    # The projection of ``project_plan._plan_was_offered``: when the coordinator
+    # first put this plan in front of the user. The spec lock's OTHER half — a
+    # plan may be accepted without ever having been offered, and until it has
+    # been the keeper still owns the document, so the prompt must be able to
+    # tell the two apart. **Monotone** for the same reason its neighbour is.
+    # ``None`` on every project that predates the field and on every plan whose
+    # coordinator has not sent a review round yet.
+    plan_offered_at: Optional[datetime] = None
+
+    # Private runtime state (not serialized)
+    _ctx: Optional["ModelContext"] = PrivateAttr(default=None)
+
+    @computed_field
+    @property
+    def last_modified(self) -> datetime:
+        """Recency key the sidebar sorts on (desc).
+
+        ``max(last_request_ts, last_response_ts)`` with ``created_at`` as the
+        floor, so a brand-new / message-less project still has a deterministic,
+        non-null sort key. Decorated with ``@computed_field`` so it rides
+        ``model_dump()`` into ``GET /projects`` and ``GET /projects/{id}``
+        without extra plumbing.
+        """
+        candidates = [_as_aware_utc(self.created_at)]
+        if self.last_request_ts is not None:
+            candidates.append(_as_aware_utc(self.last_request_ts))
+        if self.last_response_ts is not None:
+            candidates.append(_as_aware_utc(self.last_response_ts))
+        return max(candidates)
+
+    @property
+    def ctx(self) -> "ModelContext":
+        """Get the model context (required for I/O operations).
+
+        Raises:
+            RuntimeError: If context is not set (use Project.get() to load with context)
+        """
+        if self._ctx is None:
+            raise RuntimeError(
+                "Project requires ModelContext. "
+                "Use Project.get() to load with context."
+            )
+        return self._ctx
+
+    # -------------------------------------------------------------------------
+    # Derived Properties (always read fresh from filesystem)
+    # -------------------------------------------------------------------------
+
+    @computed_field
+    @property
+    def status(self) -> ProjectStatus:
+        """Project status (always reads fresh from meta.json).
+
+        Decorated with ``@computed_field`` so Pydantic includes it in
+        ``model_dump()`` / serialized HTTP responses (otherwise the
+        ``GET /projects/{id}`` payload would silently omit ``status``,
+        and frontend gates like ``project.status === ProjectStatus.COMPLETED``
+        would never match).
+
+        Returns:
+            ProjectStatus.ACTIVE or ProjectStatus.COMPLETED or ProjectStatus.FAILED
+        """
+        # Through the stat-checked cache: still fresh on every access, but a
+        # project list no longer re-parses meta.json once more per project.
+        data = self.ctx.file_cache.read_json(self.meta_path)
+        return ProjectStatus(data["status"])
+
+    @computed_field
+    @property
+    def phase(self) -> ProjectPhase:
+        """§3.5's plan lifecycle — a pure function of this project's own fields.
+
+        ::
+
+            COMPLETED -> "complete";  FAILED -> "failed"
+            surface != "regular" -> "executing"     # LOAD-BEARING THREE TIMES
+            plan_seeded_at and not plan_accepted_at -> "spec-ing"
+            else "executing"
+
+        The ``surface != "regular"`` branch keeps a **DM** out of a phase it has
+        no plan for; keeps a **front-desk** project — where ``plan_accepted_at``
+        is never set, because there is no user in the accepting role (§7.2) —
+        from being stranded in ``spec-ing`` for its entire life; and **is the
+        shape guard the execution gate reads**. A reviewer trimming a
+        redundant-looking branch would delete exactly this one.
+
+        ``spec-ing`` requires **positive evidence of being unstarted**, and that
+        is the migration: derived from *"not accepted"* alone, every project that
+        exists today would flip to ``spec-ing`` on deploy — none has ever had a
+        plan accepted, because the feature did not exist — and every one of them
+        would stop at the gate.
+
+        **Not the wire value on a front-desk row.** ``PlanSummary.phase`` is
+        ``null`` there (ruling 6.1, F-1) because a client must be able to tell
+        *"no acceptance model"* from *"not yet accepted"*; the lifecycle answer
+        here is still ``executing``, which is what the gate needs. Two questions,
+        two answers, one derivation — ``plan_summary_for`` nulls this, it does
+        not recompute it.
+        """
+        status = self.status
+        if status == ProjectStatus.COMPLETED:
+            return "complete"
+        if status == ProjectStatus.FAILED:
+            return "failed"
+        if self.surface != "regular":
+            return "executing"
+        if self.plan_seeded_at is not None and self.plan_accepted_at is None:
+            return "spec-ing"
+        return "executing"
+
+    @property
+    def data_dir(self) -> Path:
+        """Path to project data directory (projects/{name}-{id}/)."""
+        return self.ctx.projects_dir / f"{self.name}-{self.id}"
+
+    @property
+    def meta_dir(self) -> Path:
+        """Path to project metadata directory (metadata/projects/{name}-{id}/)."""
+        return self.ctx.metadata_dir / f"{self.name}-{self.id}"
+
+    @property
+    def meta_path(self) -> Path:
+        """Path to project meta.json file."""
+        return self.meta_dir / "meta.json"
+
+    @property
+    def chatrooms(self) -> list[str]:
+        """List chatroom names by scanning metadata directory.
+
+        Derived from filesystem: lists directories under
+        metadata/projects/{name}-{id}/chatrooms/
+
+        A project with no rooms yet has **no** ``chatrooms/`` dir at all —
+        ``ProjectState.create`` doesn't make one, it appears when the first room
+        does. That is an ordinary state (8 of 544 projects on the reference box),
+        so it answers ``[]`` rather than raising ``FileNotFoundError``: "this
+        project has no rooms" is data, not a failure. Raising here surfaced as a
+        500 on ``GET /projects/{id}/chatrooms`` for exactly those projects, and
+        would have turned ``results[pid] == []`` into ``errors[pid]`` on the batch
+        route — collapsing "no rooms" into "you can't see this", the one
+        distinction that envelope exists to preserve.
+
+        Returns:
+            Sorted list of chatroom names; ``[]`` when the project has no rooms.
+        """
+        chatrooms_dir = self.meta_dir / "chatrooms"
+        if not chatrooms_dir.is_dir():
+            return []
+        return sorted(d.name for d in chatrooms_dir.iterdir() if d.is_dir())
+
+    @property
+    def is_dm_project(self) -> bool:
+        """Owned 1:1 DM ONLY (``surface == "dm"``).
+
+        Does NOT include Front Desk ends (``surface == "frontdesk"``). Use
+        :meth:`is_dm_shaped` wherever the old code meant "dm-shaped" rather than
+        "owned DM specifically" — see the §5 surface audit in the Front Desk plan.
+        """
+        return self.surface == "dm"
+
+    @property
+    def is_frontdesk_project(self) -> bool:
+        """One END of a cross-account Front Desk thread (``surface == "frontdesk"``)."""
+        return self.surface == "frontdesk"
+
+    @property
+    def is_dm_shaped(self) -> bool:
+        """True for BOTH owned DMs and Front Desk ends.
+
+        Both carry a single ``user-communication`` room, use the DM prompt
+        variant (``is_dm=True``), and are auto-title eligible. This is the
+        predicate the auto-title trigger, prompt-variant selection, and the
+        DM-vs-milestone-setup branch key on — the widened successor to
+        ``is_dm_project`` at those callsites.
+        """
+        return self.surface in ("dm", "frontdesk")
+
+    def frontdesk_is_host_side(self, ctx: "ModelContext") -> bool:
+        """True when the coordinator is owned by ``created_by`` (the terminal/host end).
+
+        Semantics: the project's coordinator agent is ``registered_by`` the same
+        user who created the project — i.e. someone reached IN to MY agent. This
+        is the **host / terminal** side of a cross-account thread (renders in the
+        owner's Front Desk section; tunnel detection treats it as terminal so it
+        never spawns an FD-of-an-FD). The **requester** side is the negation —
+        the coordinator is a foreign agent I do NOT own (I reached OUT).
+
+        Requires an Agent lookup because ``Project`` stores ``coordinator_id``,
+        not the coordinator's owner. Returns ``False`` when the coordinator or
+        ``created_by`` cannot be resolved (fail-open to non-terminal).
+
+        NOTE: for an owned DM (``surface == "dm"``) this is also True (the agent
+        is my own) — which is correct for the terminal-gate usage in
+        ``tunnel_subscriber`` (own DMs and legacy shared ``-fd-`` rows are both
+        terminal: cross-account delegation must not bleed a tunnel out of them).
+        """
+        from .agent import Agent
+        if not self.created_by or self.counterpart_id:
+            return False                      # a requester end: the outside party is the counterpart
+        coordinator = Agent.get(self.coordinator_id, ctx)
+        if coordinator is None:
+            return False
+        return coordinator.registered_by == self.created_by
+
+    @property
+    def fd_requester_name(self) -> Optional[str]:
+        """Requester prefix of a DM-shaped Front Desk project name
+        (``{requester}-fd-{agent_short}``), else None.
+
+        For user-requester channels this equals the requester's username; for
+        agent-requester (cross-agent delegation) channels it's the requester
+        agent's full name, which never matches a username — so it's inert in
+        user-JWT authorization. ``created_by`` stays the host (foreign agent's
+        owner); this lets the requester be authorized on their own channel
+        without flipping ownership.
+        """
+        if not self.is_dm_project:
+            return None
+        m = _FRONT_DESK_NAME_RE.match(self.name)
+        return m.group(1) if m else None
+
+    # -------------------------------------------------------------------------
+    # Invitable allowlist (the unified (teams, names) policy for who can be
+    # invited to a chatroom in this project).
+    # -------------------------------------------------------------------------
+
+    @property
+    def enforces_invitable_allowlist(self) -> bool:
+        """Whether the chatroom-create gate should run the allowlist check.
+
+        Allowlist is only enforced when explicitly populated; an empty
+        allowlist means "no filter" (every agent in the pool is invitable).
+        ``agent_pool="self"`` also forces enforcement so the resolver's
+        empty-list short-circuit is honored at the prompt callsite.
+        """
+        return bool(self.agent_names or self.agent_teams) or self.agent_pool == "self"
+
+    def _invitable_viewer_owner_id(self, ctx: "ModelContext") -> Optional[str]:
+        """Owner whose namespace short names resolve in for the allowlist check.
+
+        Always scopes to the project creator. Returns ``None`` when no owner is
+        recorded (legacy projects).
+        """
+        return self.created_by
+
+    def matches_invitable(self, invitee: "Agent", ctx: "ModelContext") -> bool:
+        """Does ``invitee`` pass this project's invitable allowlist?
+
+        Empty allowlist = nothing matches (callers that want "empty = pass"
+        should gate on ``enforces_invitable_allowlist`` first).
+        """
+        allowed_names = set(self.agent_names)
+        allowed_teams = set(self.agent_teams)
+        if invitee.id in allowed_names:
+            return True
+        if invitee.name in allowed_names:
+            return True
+        viewer_owner_id = self._invitable_viewer_owner_id(ctx)
+        if (
+            viewer_owner_id
+            and invitee.registered_by == viewer_owner_id
+            and "-" in invitee.name
+        ):
+            short = invitee.name.split("-", 1)[1]
+            if short in allowed_names:
+                return True
+        if allowed_teams and (allowed_teams & set(invitee.user_teams)):
+            return True
+        return False
+
+    def admits_hub_agent(self, hub_agent_id: str, handle: str) -> bool:
+        """Does a retained hub agent pass this project's invitable allowlist?
+
+        The rule for hub agents, owned here so the server's room bridge and the
+        runner's invite check cannot drift: an empty allowlist admits,
+        ``agent_pool="self"`` admits none, an ``agent_names`` entry matches the
+        ``name@deployment`` handle or the hub agent id (case-insensitive), and
+        teams never match (a hub agent carries none of this owner's labels).
+        """
+        if self.agent_pool == "self":
+            return False
+        if not self.agent_names and not self.agent_teams:
+            return True
+        refs = {hub_agent_id.lower(), handle.lower()}
+        return any(str(n).lower() in refs for n in self.agent_names)
+
+    def resolve_invitable_agents(
+        self,
+        candidates: "Iterable[Agent]",
+        ctx: "ModelContext",
+    ) -> "list[Agent]":
+        """Filter ``candidates`` down to those that pass this project's allowlist.
+
+        ``agent_pool="self"`` short-circuits to an empty list — the
+        coordinator is the only allowed speaker (own-DM).
+        Empty allowlist = pass-through (returns the full list as-is).
+        """
+        if self.agent_pool == "self":
+            return []
+        if not self.agent_teams and not self.agent_names:
+            return list(candidates)
+        return [c for c in candidates if self.matches_invitable(c, ctx)]
+
+    # -------------------------------------------------------------------------
+    # Association Methods (lookup-based, no caching)
+    # -------------------------------------------------------------------------
+
+    def list_chatrooms(self) -> list:
+        """Load all chatrooms in this project.
+
+        Uses ``Chatroom.get_in(self, name)`` rather than ``Chatroom.get(id, name,
+        ctx)``: we already hold the Project, and ``Chatroom.get`` would re-resolve
+        it with a ``glob("*-{id}")`` over the whole metadata dir **once per
+        room**. On a 544-project box that re-glob is ~64–69% of the cost of
+        listing rooms; at P=20,000 it is ~1.5 s per 50 projects. Same results,
+        zero extra directory scans.
+
+        Returns:
+            List of Chatroom objects
+        """
+        from .chatroom import Chatroom
+        result = []
+        for chatroom_name in self.chatrooms:
+            room = Chatroom.get_in(self, chatroom_name)
+            if room is not None:
+                result.append(room)
+        return result
+
+    def get_chatroom(self, chatroom_name: str):
+        """Load a specific chatroom.
+
+        Args:
+            chatroom_name: The chatroom name
+
+        Returns:
+            Chatroom, or None when the room doesn't exist (Chatroom.get contract)
+        """
+        from .chatroom import Chatroom
+        return Chatroom.get_in(self, chatroom_name)
+
+    def get_shared_context_room(self):
+        """Get the shared-context room for project-wide knowledge.
+
+        Returns:
+            Chatroom
+        """
+        for room in self.list_chatrooms():
+            if room.is_shared_context_room:
+                return room
+        raise ValueError(f"shared-context room not found in project {self.id}")
+
+    def get_user_communication_room(self):
+        """Get the user-communication room for user<->assistant chat.
+
+        Returns:
+            Chatroom
+        """
+        for room in self.list_chatrooms():
+            if room.is_user_communication_room:
+                return room
+        raise ValueError(f"user-communication room not found in project {self.id}")
+
+    def get_context_files(self) -> list[str]:
+        """Get list of context files from shared-context chatroom.
+
+        Returns user-uploaded context files, excluding auto-generated files
+        (PLAN.md) which is refined during project setup.
+
+        Note: AGENTS.md is now a global file at the runner root, not per-project.
+
+        Returns:
+            List of filenames in shared-context (excluding PLAN.md)
+        """
+        shared_context_room = self.get_shared_context_room()
+        all_files = shared_context_room.list_files()
+        excluded = {"PLAN.md"}
+        return [f for f in all_files if f not in excluded]
+
+    def list_participants(self) -> list:
+        """Load participants for all project participants.
+
+        Returns:
+            List of Participant objects (Agent, Assistant, or User)
+        """
+        result = []
+        for pid in self.participating_agents:
+            participant = Participant.get(pid, self.ctx)
+            result.append(participant)
+        return result
+
+    def get_coordinator(self):
+        """Load the coordinator (typically an Assistant).
+
+        Returns:
+            Participant (Agent, Assistant, or User) or None if not found
+        """
+        return Participant.get(self.coordinator_id, self.ctx)
+
+    def get_chatrooms_for_participant(self, participant_id: str) -> list:
+        """Get chatrooms where participant is a member.
+
+        Args:
+            participant_id: The participant ID to filter by
+
+        Returns:
+            List of Chatroom objects where participant is a member
+        """
+        return [r for r in self.list_chatrooms() if participant_id in r.participants]
+
+    # -------------------------------------------------------------------------
+    # Active Record: Persistence Methods
+    # -------------------------------------------------------------------------
+
+    @classmethod
+    def get(cls, project_id: str, ctx: "ModelContext") -> "Project":
+        """Load project by ID.
+
+        Args:
+            project_id: The project ID
+            ctx: ModelContext for filesystem operations
+
+        Returns:
+            Project
+        """
+        # Find project directory by ID (glob for {name}-{id} pattern). Sort for
+        # determinism: glob order is filesystem-dependent, so an unsorted matches[0]
+        # could resolve to a different {name}-{id} dir across processes if a stale
+        # duplicate ever exists — yielding a different project.name and thus a
+        # different sandbox_dir between the writer and the action executor.
+        # The id comes straight from URLs, so it is matched literally: an id
+        # like "*" must not resolve to some other project.
+        if not FileUtil.is_safe_id(project_id):
+            raise ValueError(f"Project {project_id} not found")
+        matches = FileUtil.id_suffix_dirs(ctx.metadata_dir, project_id, "meta.json")
+        if not matches:
+            # Callers may pass the bare id or the full "{name}-{id}" slug (what
+            # an agent sees as its synced project dir). The glob above only
+            # matches the bare id; fall back to an exact dir match so the slug
+            # form resolves too.
+            exact = ctx.metadata_dir / project_id
+            if exact.is_dir():
+                matches = [exact]
+        if not matches:
+            raise ValueError(f"Project {project_id} not found")
+        meta_path = matches[0] / "meta.json"
+        data = FileUtil.read(meta_path, "json")
+        if not data:
+            raise ValueError(f"Project {project_id} has no metadata")
+        instance = cls.model_validate(data)
+        object.__setattr__(instance, "_ctx", ctx)
+        return instance
+
+    @classmethod
+    def get_many(
+        cls,
+        project_ids: Iterable[str],
+        ctx: "ModelContext",
+    ) -> dict[str, "Project"]:
+        """Batch sibling of :meth:`get` — resolve many ids in ONE directory pass.
+
+        ``Project.get`` runs ``metadata_dir.glob(f"*-{project_id}")``, which is
+        O(P) in the number of projects on the box *per id*. Resolving N ids that
+        way is O(N·P): at P=20,000 and N=50 that measured 850 ms. This does one
+        ``os.scandir`` of the same directory and answers every id from an
+        in-memory map — 20.0 ms for all 50 ids at P=20,000, which is 1.18× the
+        cost of a *single* glob.
+
+        The primitive is ``os.scandir`` + ``DirEntry.is_dir()`` deliberately, not
+        ``Path.iterdir()`` and not ``Path.glob("*")``: both of those allocate a
+        ``Path`` per entry, and ``Path.is_dir()`` is a ``stat()`` syscall per
+        entry (~6.8 µs). ``DirEntry.is_dir()`` is served from the dirent
+        ``d_type``, measured at ~0.35 µs/entry. That per-entry work — not the
+        directory scan — is the whole gap (149.9 ms vs 20.0 ms at P=20,000).
+
+        Accepts the same two id forms ``get`` does, with the same precedence:
+        the bare id (matching the ``{name}-{id}`` directory *suffix*, i.e. what
+        ``glob("*-{id}")`` matches) and — only when no suffix match exists — the
+        full ``{name}-{id}`` slug an agent sees as its synced project dir.
+        Deliberately NOT a uuid-shape heuristic: ``get``'s glob is a plain
+        suffix test, so hand-made fixture ids like ``proj-1`` must resolve
+        identically or the two resolvers disagree about ``project.name``.
+
+        Unlike ``get``, an id that does not resolve is simply **absent** from the
+        returned mapping rather than raising — the batch callers need absence,
+        not an exception, so one unknown id cannot fail a whole request.
+        ``get``'s raising contract is untouched.
+
+        Args:
+            project_ids: Ids (or ``{name}-{id}`` slugs) to resolve.
+            ctx: ModelContext for filesystem operations.
+
+        Returns:
+            ``{requested_id: Project}`` for every id that resolved.
+        """
+        wanted = {pid for pid in project_ids if pid}
+        if not wanted or not ctx.metadata_dir.exists():
+            return {}
+
+        # Requested ids share very few distinct lengths (every real id is a
+        # 36-char uuid4), so testing each dir name at just those offsets is the
+        # whole-listing equivalent of N globs at O(P) total instead of O(N·P) —
+        # no per-id rescan, and no `endswith` sweep over the cross product.
+        lengths = sorted({len(pid) for pid in wanted})
+
+        # `Project.get` tries `glob("*-{id}")` FIRST and only falls back to an
+        # exact-dir match, so the two forms are kept apart and merged with that
+        # same precedence below.
+        suffix_dir: dict[str, str] = {}
+        exact_dir: dict[str, str] = {}
+
+        def _offer(into: dict[str, str], key: str, dir_name: str) -> None:
+            # `Project.get` takes `sorted(matches)[0]`, so on the (pathological)
+            # duplicate-id case the lexicographically smallest dir wins. Match
+            # that, or the two resolvers could disagree about project.name.
+            current = into.get(key)
+            if current is None or dir_name < current:
+                into[key] = dir_name
+
+        with os.scandir(ctx.metadata_dir) as entries:
+            for entry in entries:
+                # `DirEntry.is_dir()` is served from the dirent `d_type` — no
+                # `stat()` per entry, which is the whole point of scandir here.
+                if not entry.is_dir():
+                    continue
+                name = entry.name
+                if name in wanted:
+                    _offer(exact_dir, name, name)
+                for length in lengths:
+                    # Equivalent to `name.endswith(f"-{pid}")` for any wanted pid
+                    # of this length, but one slice instead of a scan per id.
+                    if len(name) > length and name[-length - 1] == "-":
+                        candidate = name[-length:]
+                        if candidate in wanted:
+                            _offer(suffix_dir, candidate, name)
+
+        dir_for = {**exact_dir, **suffix_dir}
+
+        resolved: dict[str, "Project"] = {}
+        for pid, dir_name in dir_for.items():
+            data = FileUtil.read(ctx.metadata_dir / dir_name / "meta.json", "json")
+            if not data:
+                # Dir present but metadata missing/corrupt — same as "not found"
+                # for the caller, which reports one opaque code either way.
+                continue
+            instance = cls.model_validate(data)
+            object.__setattr__(instance, "_ctx", ctx)
+            resolved[pid] = instance
+        return resolved
+
+    @classmethod
+    def list_all(cls, ctx: "ModelContext") -> list["Project"]:
+        """List all projects.
+
+        Args:
+            ctx: ModelContext for filesystem operations
+
+        Returns:
+            List of Project objects
+        """
+        return cls.list_where(ctx, lambda meta: True)
+
+    @classmethod
+    def list_where(
+        cls,
+        ctx: "ModelContext",
+        keep: Callable[[dict], bool],
+    ) -> list["Project"]:
+        """Projects whose raw ``meta.json`` dict passes ``keep``, in directory order.
+
+        Every ``meta.json`` is read through ``ctx.file_cache``, so a scan where
+        nothing changed is one ``stat`` per project and no JSON parsing. Only
+        the projects ``keep`` accepts are validated into models — validating
+        all ~1,300 to then throw most away was the other half of the cost.
+        ``keep`` gets the cached dict and must not mutate it.
+        """
+        result: list[Project] = []
+        if not ctx.metadata_dir.exists():
+            return result
+        with os.scandir(ctx.metadata_dir) as it:
+            # Sorted by dir name, matching the old `sorted(iterdir())` order.
+            # `DirEntry.is_dir()` comes from the dirent, so no stat per entry.
+            dirs = sorted(entry.name for entry in it if entry.is_dir())
+        # Plain string paths: at ~1,300 projects per call, building a `Path`
+        # per project costs more than the stat behind the cache check.
+        base = os.fspath(ctx.metadata_dir)
+        for dir_name in dirs:
+            data = ctx.file_cache.read_json(f"{base}/{dir_name}/meta.json")
+            if data and keep(data):
+                instance = cls.model_validate(data)
+                object.__setattr__(instance, "_ctx", ctx)
+                result.append(instance)
+        return result
+
+    @classmethod
+    def get_agent_memberships(
+        cls,
+        agent_id: str,
+        ctx: "ModelContext",
+    ) -> list["Chatroom"]:
+        """Return all chatrooms an agent participates in across all projects.
+
+        Args:
+            agent_id: The agent ID to find memberships for
+            ctx: ModelContext for filesystem operations
+
+        Returns:
+            List of Chatroom objects
+        """
+        from .chatroom import Chatroom
+
+        result: list[Chatroom] = []
+        for proj in cls.list_all(ctx):
+            if agent_id not in proj.participating_agents:
+                continue
+            for chatroom_name in proj.chatrooms:
+                room = Chatroom.get(proj.id, chatroom_name, ctx)
+                if room is not None and agent_id in room.participants:
+                    result.append(room)
+        return result
+
+    @classmethod
+    def get_projects_for_agent(
+        cls,
+        agent_id: str,
+        ctx: "ModelContext",
+    ) -> list["Project"]:
+        """Return all projects an agent participates in.
+
+        Args:
+            agent_id: The agent ID to find projects for
+            ctx: ModelContext for filesystem operations
+
+        Returns:
+            List of Project objects where the agent is a participant
+        """
+        return cls.list_where(
+            ctx, lambda meta: agent_id in (meta.get("participating_agents") or ())
+        )
+
+    # -------------------------------------------------------------------------
+    # State Access (for write operations)
+    # -------------------------------------------------------------------------
+
+    def state(self) -> "ProjectState":
+        """Get the state model for write operations.
+
+        Returns:
+            ProjectState instance for this project
+        """
+        return ProjectState(self)
+
+
+# =============================================================================
+# ProjectState: Write Operations
+# =============================================================================
+
+
+#: The separator in a hub stand-in's id, ``{genesis fp16}~{agent_name}``. Local
+#: participant ids are UUIDs and agent names never contain it.
+STAND_IN_SEPARATOR = "~"
+
+
+def scope_key(project: "Project") -> Optional[str]:
+    """The requester key a turn in this project is scoped by: its own, or, for
+    a project a scoped turn created (``remote_content``, not a hub thread) that
+    ``migrate_scoped_turn_projects`` has not keyed yet, the key that migration
+    gives it, ``project:{id}``. So a start-up pass that failed partway leaves
+    the rest scoped, never at full power. Pure: no I/O."""
+    key = getattr(project, "requester_key", None)
+    if key:
+        return key
+    if getattr(project, "remote_content", False) and not is_untrusted_source(project):
+        return f"project:{project.id}"
+    return None
+
+
+def is_isolated(project: "Project") -> bool:
+    """True when the project's turns must run scoped: it serves a requester
+    other than the owner (``scope_key``). The server's isolation gate refuses
+    to hand such a project to an agent whose runner can neither sandbox the
+    turn nor run it owner-isolated. Hub threads' ``remote_content`` does not
+    isolate (plan-owner-isolation section 3). Pure: no I/O."""
+    return scope_key(project) is not None
+
+
+def turn_kind(project: "Project") -> str:
+    """How a turn in this project runs: "requester" (it serves someone other
+    than the owner) or "full". The runner's TurnScope classifies the same way
+    (runner/turn_scope.py)."""
+    return "requester" if scope_key(project) else "full"
+
+
+def counterpart_of(project: "Project") -> Optional[str]:
+    """The outside party of a requester end: ``counterpart_id``, or, on a hub
+    thread the own-coordinator migration has not reached yet, the stand-in
+    coordinator. None on every other project. Pure."""
+    if project.counterpart_id:
+        return project.counterpart_id
+    if STAND_IN_SEPARATOR in (project.coordinator_id or ""):
+        return project.coordinator_id
+    return None
+
+
+def is_untrusted_source(project: "Project") -> bool:
+    """True for a hub requester thread: a Front Desk project whose outside
+    party (``counterpart_id``; the coordinator before the own-coordinator
+    migration) is the stand-in for an agent on another deployment. Its
+    messages are written by a stranger's agent, so no agent-context assembly
+    (reflection transcripts, recent activity, summaries, memory inputs) may
+    read them; the owner still sees the thread in the browser. Pure: no I/O,
+    no hub import."""
+    return getattr(project, "surface", None) == "frontdesk" and STAND_IN_SEPARATOR in (counterpart_of(project) or "")
+
+
+class ProjectState:
+    """Mutable state model for project write operations.
+
+    This class handles all filesystem write operations for a project,
+    triggered by changelog processing. The separation keeps the main
+    Project model immutable while allowing write operations.
+
+    Usage:
+        project = Project.get(project_id, ctx)
+        project.state().complete()
+
+    For creation, use the classmethod:
+        project = ProjectState.create(project_id, project_name, coordinator_id, request, ctx)
+    """
+
+    def __init__(self, project: Project) -> None:
+        """Initialize with a project instance.
+
+        Args:
+            project: The project to operate on
+        """
+        self._project = project
+
+    @classmethod
+    def create(
+        cls,
+        project_id: str,
+        project_name: str,
+        coordinator_id: str,
+        coordinator_name: str,
+        request: str,
+        created_by: str,
+        created_at: datetime,
+        ctx: "ModelContext",
+        agent_pool: str = "verified",
+        agent_teams: list[str] | None = None,
+        agent_names: list[str] | None = None,
+        surface: ProjectSurface = "regular",
+        display_name: Optional[str] = None,
+        requester_key: Optional[str] = None,
+        memory_excluded: bool = False,
+        remote_content: bool = False,
+        counterpart_id: Optional[str] = None,
+        counterpart_name: Optional[str] = None,
+    ) -> Project:
+        """Create a new project with directories and meta.json.
+
+        Creates:
+        - Data directory: projects/{name}-{id}/
+        - Metadata directory: metadata/projects/{name}-{id}/
+        - meta.json in metadata directory
+
+        Args:
+            project_id: The project ID
+            project_name: The project name
+            coordinator_id: The coordinator agent ID
+            coordinator_name: The coordinator name
+            request: User request string
+            created_by: User ID of creator (optional)
+            created_at: Creation timestamp
+            ctx: ModelContext for filesystem operations
+            agent_pool: Agent pool mode ("owned", "verified", or "all")
+            agent_teams: Optional list of user_teams; agents carrying any of these teams pass the allowlist (composed via OR with agent_names; empty/None on both = no filter)
+            agent_names: Optional list of agent display names (id, full name, or owner-relative short name); agents matching any pass the allowlist (composed via OR with agent_teams; empty/None on both = no filter)
+
+        Returns:
+            The created Project instance
+
+        Raises:
+            ValueError: If project_name is invalid
+        """
+        # Validate project name
+        project_name = FileUtil.validate_fs_name(project_name)
+
+        # Build paths (directories created by FileUtil.write with ensure_dir=True)
+        meta_dir = ctx.metadata_dir / f"{project_name}-{project_id}"
+
+        # Write meta.json (chatrooms derived from filesystem, not stored)
+        project_data = {
+            "id": project_id,
+            "name": project_name,
+            "status": "active",
+            "coordinator_id": coordinator_id,
+            "coordinator_name": coordinator_name,
+            "request": request,
+            "participating_agents": [coordinator_id],
+            "created_at": created_at.isoformat() if created_at else None,
+            "created_by": created_by,
+            "agent_pool": agent_pool,
+            "agent_teams": list(agent_teams) if agent_teams else [],
+            "agent_names": list(agent_names) if agent_names else [],
+            "surface": surface,
+            "display_name": display_name,
+        }
+        # Written only when set, so every meta.json of an ordinary project
+        # stays byte-identical to what it was.
+        if requester_key is not None:
+            project_data["requester_key"] = requester_key
+        if memory_excluded:
+            project_data["memory_excluded"] = True
+        if remote_content:
+            project_data["remote_content"] = True
+        if counterpart_id is not None:
+            project_data["counterpart_id"] = counterpart_id
+            project_data["counterpart_name"] = counterpart_name
+        FileUtil.write(meta_dir / "meta.json", project_data, "json", atomic=True)
+
+        # Return the created project
+        instance = Project.model_validate(project_data)
+        object.__setattr__(instance, "_ctx", ctx)
+        return instance
+
+    def complete(self) -> None:
+        """Update project status to COMPLETED in meta.json."""
+        meta_path = self._project.meta_path
+        project_dict = FileUtil.read(meta_path, "json")
+        project_dict["status"] = "completed"
+        FileUtil.write(meta_path, project_dict, "json", atomic=True)
+
+    def reactivate(self) -> None:
+        """Flip project status back to ACTIVE in meta.json.
+
+        Counterpart to ``complete()`` — runs when a user posts into a
+        completed task's user-communication, resuming the conversation.
+        """
+        meta_path = self._project.meta_path
+        project_dict = FileUtil.read(meta_path, "json")
+        project_dict["status"] = "active"
+        FileUtil.write(meta_path, project_dict, "json", atomic=True)
+
+    def apply_allowlist_update(
+        self,
+        agent_names: list[str],
+        agent_teams: list[str],
+    ) -> None:
+        """Overwrite the project's allowlist snapshot in meta.json.
+
+        Idempotent: re-writes the two list fields with the supplied values.
+        Fired by ``PROJECT_ALLOWLIST_UPDATED`` replay; emitted server-side
+        when the coordinator's Front Desk Settings change.
+        """
+        meta_path = self._project.meta_path
+        project_dict = FileUtil.read(meta_path, "json")
+        project_dict["agent_names"] = list(agent_names)
+        project_dict["agent_teams"] = list(agent_teams)
+        FileUtil.write(meta_path, project_dict, "json", atomic=True)
+
+    def add_participant(self, participant_id: str) -> None:
+        """Add a participant to the project's participating_agents list.
+
+        Args:
+            participant_id: The participant ID to add
+        """
+        meta_path = self._project.meta_path
+        project_dict = FileUtil.read(meta_path, "json")
+        current_agents = project_dict.get("participating_agents", [])
+        if participant_id not in current_agents:
+            current_agents.append(participant_id)
+            project_dict["participating_agents"] = current_agents
+            FileUtil.write(meta_path, project_dict, "json", atomic=True)
+
+    def touch_activity(self, *, ts: datetime, is_request: bool) -> None:
+        """Advance ``last_request_ts`` (user message) or ``last_response_ts``
+        (agent message) so the project sorts by recency in the sidebar.
+
+        Monotonic set-if-greater / set-if-null: a timestamp is only ever moved
+        forward, never backward. This makes the write idempotent under changelog
+        replay and safe against an out-of-order replay or a re-run migration
+        backfill regressing a value the live server already advanced.
+
+        Args:
+            ts: The message timestamp.
+            is_request: True for a USER message (``last_request_ts``), False for
+                an AGENT/ASSISTANT message (``last_response_ts``).
+        """
+        field = "last_request_ts" if is_request else "last_response_ts"
+        meta_path = self._project.meta_path
+        project_dict = FileUtil.read(meta_path, "json")
+        new_dt = _as_aware_utc(ts)
+        existing_raw = project_dict.get(field)
+        existing_dt = (
+            _as_aware_utc(datetime.fromisoformat(existing_raw)) if existing_raw else None
+        )
+        if existing_dt is not None and existing_dt >= new_dt:
+            return  # never regress; no write needed
+        project_dict[field] = new_dt.isoformat()
+        FileUtil.write(meta_path, project_dict, "json", atomic=True)
+
+    def set_thread_title(self, *, display_name: str, slug: Optional[str] = None) -> None:
+        """Apply a model-generated title to a DM thread after its first exchange.
+
+        Sets ``display_name`` (replacing the ``"New chat"`` placeholder). The
+        stable thread identity is the project ``id`` (UUID) — see the plan's
+        OPEN Q2. The ``slug`` parameter is accepted for interface stability but
+        deliberately NOT applied: the on-disk layout keys the project directory
+        on ``{name}-{id}``, so renaming the slug would require moving directories
+        and is unsafe until Q2 is resolved. Only ``display_name`` is model-set.
+
+        Idempotent: a second call simply overwrites ``display_name`` again.
+
+        Args:
+            display_name: The model-generated human title.
+            slug: Reserved (see above); currently a no-op.
+        """
+        meta_path = self._project.meta_path
+        project_dict = FileUtil.read(meta_path, "json")
+        project_dict["display_name"] = display_name
+        FileUtil.write(meta_path, project_dict, "json", atomic=True)
+
+    def set_report_published_at(self, ts: Optional[str]) -> bool:
+        """Denormalize the report's ``generated_at`` into meta.json.
+
+        ``ts`` is the ISO string from ``ProjectReport.generated_at`` on publish,
+        or ``None`` to clear the field on delete. Read-modify-write of the full
+        meta dict — preserves every other key, mirroring ``complete()`` /
+        ``touch_activity()``.
+
+        Idempotent: writes only on a real delta (re-stamping the same value, or
+        clearing an already-absent value, is a no-op). This keeps the live
+        publish/delete path and the one-shot startup backfill both safe to run
+        repeatedly with no needless atomic rewrite. Returns True iff it wrote.
+
+        Written directly (not via the changelog) because ``report.json`` itself
+        is a non-changelog file artifact; this field is a projection of it, kept
+        adjacent to its source. See the persistence-safety note in
+        ``models/project_report.py::backfill_report_published_at``.
+        """
+        meta_path = self._project.meta_path
+        project_dict = FileUtil.read(meta_path, "json")
+        if project_dict.get("report_published_at") == ts:
+            return False  # already in the desired state; no write
+        project_dict["report_published_at"] = ts
+        FileUtil.write(meta_path, project_dict, "json", atomic=True)
+        return True
+
+    def set_isolation_flags(
+        self,
+        *,
+        requester_key: Optional[str] = None,
+        memory_excluded: bool = False,
+        remote_content: bool = False,
+    ) -> bool:
+        """Set isolation flags in meta.json (PROJECT_FLAGS_CHANGED). Only ever
+        sets: ``requester_key`` is written only when the project has none, and
+        a flag already true stays true. Returns True when meta.json changed."""
+        meta_path = self._project.meta_path
+        project_dict = FileUtil.read(meta_path, "json") or {}
+        changed = False
+        if requester_key and not project_dict.get("requester_key"):
+            project_dict["requester_key"] = requester_key
+            changed = True
+        if memory_excluded and not project_dict.get("memory_excluded"):
+            project_dict["memory_excluded"] = True
+            changed = True
+        if remote_content and not project_dict.get("remote_content"):
+            project_dict["remote_content"] = True
+            changed = True
+        if changed:
+            FileUtil.write(meta_path, project_dict, "json", atomic=True)
+        return changed
+
+    def reassign_coordinator(self, *, coordinator_id: str, coordinator_name: str,
+                             counterpart_id: str, counterpart_name: str) -> None:
+        """PROJECT_COORDINATOR_REASSIGNED: the owning user coordinates, the
+        old outside coordinator becomes the counterpart (meta.json)."""
+        meta_path = self._project.meta_path
+        project_dict = FileUtil.read(meta_path, "json") or {}
+        project_dict.update(coordinator_id=coordinator_id, coordinator_name=coordinator_name,
+                            counterpart_id=counterpart_id, counterpart_name=counterpart_name)
+        agents = list(project_dict.get("participating_agents") or [])
+        if coordinator_id not in agents:
+            agents.append(coordinator_id)
+        project_dict["participating_agents"] = agents
+        FileUtil.write(meta_path, project_dict, "json", atomic=True)
+
+    def set_plan_state(
+        self,
+        *,
+        plan_seeded_at: Optional[str],
+        plan_accepted_at: Optional[str],
+        plan_accepted_revision: int,
+        plan_accepted_spec_digest: str,
+        plan_open_notes: int,
+        plan_user_reviewed_at: Optional[str] = None,
+        plan_offered_at: Optional[str] = None,
+    ) -> bool:
+        """Apply the plan lifecycle projection into meta.json (D13, §7.2).
+
+        Fired by ``PROJECT_PLAN_STATE`` replay, so it runs identically on the
+        server (where the entry is minted) and on **every runner that syncs it**
+        — which is the entire reason the entry exists (see
+        ``ProjectPlanStatePayload``). Read-modify-write of the full meta dict,
+        preserving every other key, exactly as :meth:`set_report_published_at`
+        and :meth:`complete` do.
+
+        Applied **unconditionally** (last-write-wins), like
+        :meth:`set_thread_title`: the publisher is the only gate, and a changelog
+        rebuild must deterministically reproduce the last entry. Returns True iff
+        the bytes actually moved, so the caller can skip a needless atomic write.
+        """
+        meta_path = self._project.meta_path
+        project_dict = FileUtil.read(meta_path, "json")
+        incoming = {
+            "plan_seeded_at": plan_seeded_at,
+            "plan_accepted_at": plan_accepted_at,
+            "plan_accepted_revision": plan_accepted_revision,
+            "plan_accepted_spec_digest": plan_accepted_spec_digest,
+            "plan_open_notes": plan_open_notes,
+            "plan_user_reviewed_at": plan_user_reviewed_at,
+            "plan_offered_at": plan_offered_at,
+        }
+        if all(project_dict.get(k) == v for k, v in incoming.items()):
+            return False
+        project_dict.update(incoming)
+        FileUtil.write(meta_path, project_dict, "json", atomic=True)
+        return True
+
+    def set_plan_updated_at(self, ts: Optional[str]) -> bool:
+        """Denormalize the plan's last-write timestamp into meta.json (D5, §6).
+
+        ``ts`` is an ISO string, or ``None`` to clear. Mirrors
+        :meth:`set_report_published_at` exactly — read-modify-write of the full
+        meta dict, idempotent, written **outside the changelog** because the
+        plan's own bytes are the changelog artifact and this field is a
+        projection of them (the ``report_published_at`` safety argument, §6).
+
+        Called by the plan routes after every mutation, so "the plan moved" is
+        readable from the project list without opening plan.json.
+
+        Returns True iff it wrote.
+        """
+        meta_path = self._project.meta_path
+        project_dict = FileUtil.read(meta_path, "json")
+        if project_dict.get("plan_updated_at") == ts:
+            return False
+        project_dict["plan_updated_at"] = ts
+        FileUtil.write(meta_path, project_dict, "json", atomic=True)
+        return True

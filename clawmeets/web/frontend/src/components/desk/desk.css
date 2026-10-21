@@ -1,0 +1,1910 @@
+/* My Desk — command-center styles. Layers on design/tokens.css.
+   Ported from the design handoff; the shell-grid rules are dropped
+   because the desk mounts inside AppLayout's <Outlet>, not a 3-col grid. */
+
+/* ————————————————— main pane ————————————————— */
+.md { display: flex; flex-direction: column; min-width: 0; height: 100%; background: var(--bg-canvas); }
+/* Title block + command band live INSIDE .md-scroll, so they scroll away with
+   the cards. Both keep their own 30px gutter (the scroller has none) so their
+   bottom rules still run the full width of the pane. */
+.md-top { padding: 20px 30px 16px; border-bottom: 1px solid var(--line-1); }
+.md-top-row { display: flex; align-items: flex-start; gap: 16px; }
+/* The dateline that used to sit above the title is gone — it repeated the OS
+   clock and pushed the one heading that matters down a line. */
+.md-h1-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.md-h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: 1; margin: 0; color: var(--ink-1); }
+/* ⓘ beside the title — replays the welcome tour. Deliberately quiet:
+   it is a standing affordance on every desk, not a call to action. */
+.md-h1-info {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 999px;
+  border: 0; background: transparent; color: var(--ink-4); cursor: pointer;
+  transition: color var(--t-fast), background var(--t-fast);
+}
+.md-h1-info:hover,
+.md-h1-info[aria-expanded='true'] { color: var(--accent-deep); background: var(--accent-softer); }
+.md-status { font-size: 13px; color: var(--ink-3); }
+.md-status b { color: var(--ink-2); font-weight: 700; }
+/* The standing Command → Working → Review flow. Mono + flat weight so it
+   reads as the desk's vocabulary, not a sentence; only the live counts lift
+   to --ink-2 (via .md-status b). */
+.md-status--flow {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px;
+  font-family: var(--font-mono); letter-spacing: -0.01em;
+}
+.md-status-step { white-space: nowrap; }
+.md-status-arrow { color: var(--ink-4); }
+.md-top-actions { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; }
+.md-top-btn {
+  flex: none; display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line-2); background: #fff; color: var(--ink-2);
+  border-radius: 999px; padding: 7px 14px; font-size: 12px; font-weight: 700; cursor: pointer;
+  transition: border-color var(--t-fast), color var(--t-fast); font-family: inherit;
+}
+.md-top-btn:hover { border-color: var(--line-strong); color: var(--ink-1); }
+.md-top-btn svg { color: var(--ink-3); }
+.md-top-icon-btn {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  padding: 7px; border-radius: 8px; border: 1px solid var(--line-2);
+  background: #fff; color: var(--ink-3); cursor: pointer;
+  transition: border-color var(--t-fast), color var(--t-fast);
+}
+.md-top-icon-btn:hover { border-color: var(--line-strong); color: var(--ink-1); }
+
+/* The pane's single scroll region (header + command band + sections). Padding
+   moved to .md-body so the header/band rules stay edge-to-edge; `relative`
+   makes it the offsetParent the rail's scroll-to-section math reads from. */
+.md-scroll { flex: 1; min-height: 0; overflow-y: auto; position: relative; }
+.md-body { padding: 22px 30px 40px; }
+.md-scroll::-webkit-scrollbar { width: 10px; }
+.md-scroll::-webkit-scrollbar-thumb { background: #e6def0; border-radius: 999px; border: 2px solid #fff; }
+.md-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* ————————————————— section headers ————————————————— */
+.md-sec { margin-bottom: 26px; }
+.md-sec:last-of-type { margin-bottom: 8px; }
+.md-sec-h { display: flex; align-items: center; gap: 9px; margin-bottom: 13px; }
+.md-sec-ic { color: var(--accent); display: inline-flex; flex: none; }
+.md-sec-t { font-size: 14px; font-weight: 800; color: var(--ink-1); flex: none; white-space: nowrap; margin: 0; }
+.md-sec-c {
+  flex: none; font-family: var(--font-mono); font-size: 11px; font-weight: 800; color: var(--ink-on-accent);
+  background: var(--accent); border-radius: 999px; min-width: 19px; height: 19px; padding: 0 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.md-sec-hint { flex: 0 1 auto; min-width: 0; font-size: 11.5px; color: var(--ink-4); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-sec-line { flex: 1; height: 1px; background: var(--line-1); margin-left: 4px; }
+.md-live-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--av-green); box-shadow: 0 0 0 3px #daf1e2; }
+
+.md-empty { font-size: 12.5px; color: var(--ink-4); padding: 4px 2px 2px; }
+
+/* ————————————————— dashboard tiles ————————————————— */
+.md-dash-row { display: flex; gap: 12px; overflow-x: auto; padding: 2px 2px 6px; scroll-snap-type: x proximity; }
+.md-dash-row::-webkit-scrollbar { height: 8px; }
+.md-dash-row::-webkit-scrollbar-thumb { background: #e6def0; border-radius: 999px; }
+.md-dash {
+  /* `min-width: 0` is load-bearing, not tidying. As a flex item of
+     .md-dash-row it otherwise gets `min-width: auto`, whose automatic minimum
+     size floors the tile at its CONTENT's min-content width — and
+     .md-dash-name is `white-space: nowrap`, so that floor is the full title.
+     A long title then widened the track past its 248px basis instead of
+     ellipsizing. The `min-width: 0` already on .md-dash-name cannot fix this:
+     it only lets the name shrink inside .md-dash-h, one level too deep. */
+  flex: 0 0 248px; min-width: 0; scroll-snap-align: start;
+  text-align: left; border: 1px solid var(--line-2); border-radius: var(--r-lg); background: #fff;
+  padding: 13px 15px 11px; cursor: pointer; display: flex; flex-direction: column; gap: 8px;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), transform var(--t-fast); font-family: inherit;
+}
+.md-dash:hover { border-color: var(--accent-soft); box-shadow: var(--shadow-2); transform: translateY(-1px); }
+.md-dash-h { display: flex; align-items: center; gap: 8px; }
+.md-dash-name { font-size: 13px; font-weight: 800; color: var(--ink-1); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-dash-open { color: var(--ink-4); display: inline-flex; flex: none; }
+.md-dash:hover .md-dash-open { color: var(--accent); }
+
+.md-dash-f { display: flex; align-items: center; gap: 7px; margin-top: auto; }
+.md-dash-by { font-size: 11px; color: var(--ink-3); font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-dash-job { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--ink-4); border-top: 1px dashed var(--line-1); padding-top: 8px; }
+.md-dash-job .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
+.md-dash-ago { flex: none; }
+.md-dash-sched { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--ink-4); border-top: 1px dashed var(--line-1); padding-top: 8px; }
+.md-dash-sched-x {
+  margin-left: auto; border: 0; background: transparent; color: var(--ink-4); cursor: pointer;
+  display: inline-flex; padding: 2px; border-radius: 5px;
+}
+.md-dash-sched-x:hover { color: var(--prio-urgent-fg); background: var(--prio-urgent-bg); }
+.md-dash-add {
+  border: 0; background: transparent; color: var(--accent-deep); font-family: inherit;
+  font-size: 10.5px; font-weight: 700; cursor: pointer; padding: 8px 0 0; border-top: 1px dashed var(--line-1);
+  display: inline-flex; align-items: center; gap: 5px; text-align: left;
+}
+.md-dash-add:hover { color: var(--accent); }
+
+/* ————————————————— update cards ————————————————— */
+.md-list { display: flex; flex-direction: column; gap: 11px; }
+.md-card {
+  position: relative; border: 1px solid var(--line-2); border-radius: var(--r-lg); background: #fff;
+  padding: 14px 16px 13px; padding-left: 18px; overflow: hidden;
+  /* `background` and `outline-color` are here for the cross-highlight at the
+     foot of this file — without them the linked mark snaps to full strength on
+     the first mouse-move frame, which is half of what made its predecessor
+     read as cheap. */
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), opacity var(--t-leave), transform var(--t-leave), background var(--t-med), outline-color var(--t-med);
+}
+.md-card::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--line-strong);
+  /* WIDTH ONLY. The lane rules below own this element's `background` (hue is
+     lane semantics), and the cross-highlight widens it without touching that —
+     see `.md-card--linked::before`. */
+  transition: width var(--t-med);
+}
+.md-card--reply::before { background: var(--accent); }
+.md-card--report::before { background: var(--av-indigo); }
+.md-card--progress::before { background: var(--av-green); animation: md-pulse 1.4s ease-in-out infinite; }
+/* "Recently done" — historical, neutral stripe (not a live lane). */
+.md-card--read::before { background: var(--ink-4); }
+/* THE DEVIATION'S CARRIER IN THE FEED — carrier 1 of 5, and the one that has
+   to survive before the card is opened. It is written with the class DOUBLED so
+   it outranks every lane rule by specificity rather than by source order: the
+   single-class form `.md-card--urgent::before` sat at (0,1,1), identical to
+   `--report`, `--progress` and `--read`, and was declared BEFORE all three — so
+   an off-contract card in Working (`md-card md-card--progress md-card--urgent`)
+   drew a pulsing GREEN rule and the carrier was dead on three of the four
+   lanes. `animation: none` is load-bearing for that same lane: without it the
+   `--progress` pulse still applies, since only `background` is being overridden.
+   Pinned by `desk.css.test.ts`, which resolves this cascade for real — a jsdom
+   `querySelector('.md-card--urgent')` cannot see any of it. */
+.md-card.md-card--urgent::before { background: var(--prio-urgent-fg); animation: none; }
+.md-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-1); }
+.md-card--acted { opacity: 0; transform: translateX(14px); }
+/* keyboard-selected card */
+.md-card--selected { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-softer); }
+.md-card--selected:hover { border-color: var(--accent); }
+
+/* Header = the subject line (title + when). Baseline alignment keeps the
+   timestamp on the title's first line when the title wraps. */
+.md-card-h { display: flex; align-items: baseline; gap: 10px; margin-bottom: 5px; }
+.md-when { flex: none; font-size: 10.5px; color: var(--ink-4); font-family: var(--font-mono); font-weight: 600; }
+
+.md-card-title { flex: 1; min-width: 0; font-size: 14.5px; font-weight: 800; color: var(--ink-1); letter-spacing: -0.01em; text-wrap: pretty; }
+
+/* Byline under the title — attribution, so it reads quieter than the subject
+   and carries an xs avatar (the sm one out-weighed the name beside it). */
+.md-card-by { display: flex; align-items: center; gap: 7px; margin-bottom: 10px; }
+.md-card-agent {
+  min-width: 0; font-size: 12px; font-weight: 700; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* File pills for a card whose latest message brought attachments — sits under
+   the title, above the quote, so the files read as part of the message header. */
+.md-card-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 9px; }
+.md-file-pill {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 220px;
+  padding: 3px 9px; border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  background: #fff; color: var(--ink-2); font-family: var(--font-mono);
+  font-size: 11px; font-weight: 600; cursor: pointer; transition: background 0.12s, border-color 0.12s;
+}
+.md-file-pill:hover { background: var(--accent-softer); border-color: var(--accent-soft); color: var(--accent-deep); }
+.md-file-pill .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Hosts rendered markdown (MarkdownBody). The collapse clamp + fade come from
+   MarkdownBody itself, so no CSS line-clamp here.
+
+   THE SURFACE AND ITS FADE ARE ONE DECISION, so they are set together. An
+   expanded band (`.md-cs--focus`) paints a `--bg-rail` gradient; a `#fff` box
+   inside it reads as a seam across the card, which is what it was. The design
+   names `--bg-card-hover` for this box (sidebar-redesign-desk.css:120) — the
+   same lavender family as the band, so the inner surface agrees with its
+   container instead of cutting a white hole in it.
+   `--md-fade-to` then hands that same token to MarkdownBody's collapse
+   overlay; without it the fade still resolves to white and the seam comes
+   back, in the collapsed state only. */
+.md-card-quote {
+  font-size: 12.5px; line-height: 1.55; color: var(--ink-2);
+  background: var(--bg-card-hover); --md-fade-to: var(--bg-card-hover);
+  border: 1px solid var(--line-1); border-left: 2px solid var(--accent-soft);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0; padding: 9px 12px; margin-bottom: 11px;
+}
+.md-card-quote--flat { background: transparent; border: 0; border-left: 0; padding: 0 0 2px; color: var(--ink-3); }
+.md-card-quote--clickable { cursor: pointer; }
+.md-card-quote .prose { font-size: 12.5px; }
+
+/* working indicator inside a progress card */
+.md-prog { display: flex; align-items: center; gap: 8px; margin-bottom: 11px; }
+.md-prog-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--av-green); flex: none; animation: md-pulse 1.4s ease-in-out infinite; }
+/* Shared "your team is on it" blink — driven in unison by the progress dot and
+   the green left stripe (.md-card--progress::before). */
+@keyframes md-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.md-prog-lbl { font-size: 11px; font-weight: 700; color: var(--ink-3); font-family: var(--font-mono); flex: none; }
+
+/* actions */
+.md-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.md-btn {
+  display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-2); background: #fff;
+  color: var(--ink-2); border-radius: 8px; padding: 7px 12px; font-size: 12px; font-weight: 700;
+  cursor: pointer; font-family: inherit; transition: border-color var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+.md-btn:hover { border-color: var(--line-strong); background: var(--bg-card-hover); color: var(--ink-1); }
+.md-btn svg { color: var(--ink-3); }
+.md-btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.md-btn--primary:hover { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
+.md-btn--primary svg { color: #fff; }
+.md-btn--primary:disabled { opacity: 0.5; cursor: default; background: var(--accent); border-color: var(--accent); }
+.md-btn--ghost { border-color: transparent; background: transparent; color: var(--accent-deep); margin-left: auto; }
+.md-btn--ghost:hover { background: var(--accent-softer); border-color: transparent; color: var(--accent-deep); }
+.md-btn--ghost svg { color: var(--accent); }
+.md-btn--quiet { border-color: transparent; background: transparent; color: var(--ink-3); }
+.md-btn--quiet:hover { background: var(--bg-pill-muted); border-color: transparent; }
+
+/* replied confirmation */
+.md-replied { display: flex; align-items: baseline; gap: 6px; font-size: 12px; color: var(--prio-quick-fg); font-weight: 700; margin-bottom: 4px; }
+.md-replied svg { color: var(--prio-quick-fg); position: relative; top: 2px; flex: none; }
+.md-replied-tx { color: var(--ink-3); font-weight: 500; font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* inline reply composer */
+.md-reply { margin-top: 12px; border: 1px solid var(--line-2); border-radius: var(--r-md); background: var(--bg-card-hover); padding: 10px 12px; }
+.md-reply-to { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-3); margin-bottom: 7px; }
+.md-reply-to svg { color: var(--ink-4); }
+.md-reply-dest { color: var(--accent-deep); font-weight: 700; font-family: var(--font-mono); }
+/* Now a PromptEditor (contentEditable), not a textarea: it supplies the shell
+   here and `.pe-input` supplies only layout. `resize` is gone with the
+   textarea; height is clamped by the editor's min/max-height props. */
+.md-reply-in {
+  width: 100%; border: 1px solid var(--line-2); border-radius: var(--r-sm); background: #fff;
+  font-family: inherit; font-size: 13px; color: var(--ink-1); padding: 9px 10px; line-height: 1.5;
+}
+.md-reply-in:focus { outline: none; border-color: var(--accent-soft); box-shadow: 0 0 0 3px var(--accent-softer); }
+.md-reply-bar { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.md-reply-hint { font-size: 10.5px; color: var(--ink-4); }
+.md-reply-hint kbd { font-size: 10px; padding: 0 4px; font-family: var(--font-mono); }
+.md-reply-actions { margin-left: auto; display: flex; align-items: center; gap: 7px; }
+.md-reply-attach {
+  display: inline-flex; align-items: center; justify-content: center; padding: 5px;
+  border-radius: var(--r-sm); color: var(--ink-4); background: transparent; cursor: pointer;
+  transition: color .12s, background .12s;
+}
+.md-reply-attach:hover { color: var(--accent-deep); background: var(--accent-softer); }
+.md-reply-attach:disabled { opacity: .5; cursor: not-allowed; }
+.md-reply-err { margin-top: 8px; font-size: 11.5px; color: var(--prio-urgent-fg); }
+
+/* ————————————————— foot ————————————————— */
+.md-foot { font-size: 11.5px; color: var(--ink-4); text-align: center; padding: 8px 0 4px; border-top: 1px dashed var(--line-1); margin-top: 4px; }
+
+/* ————————————————— welcome tour (DeskWelcomeTour) —————————————————
+   A five-step modal carousel that opens once per account and again from the ⓘ.
+   Rides `.sop-scrim` / `.sop-btn` / `.sop-dlg-x` for the scrim, buttons and
+   close glyph rather than growing a second modal system; everything below is
+   the carousel and its illustrations. The `.tour-art` boxes are fixed-height
+   sketches, so on a narrow screen they are dropped and the copy carries the
+   step on its own. */
+.tour {
+  width: min(820px, 100%); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
+  background: #fff; border-radius: 16px; box-shadow: var(--shadow-pop); overflow: hidden;
+  animation: md-rise var(--t-slow) cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.tour-top { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px 0; }
+.tour-step { font-size: 11px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+.tour-viewport { overflow: hidden; flex: 1; min-height: 0; overflow-y: auto; }
+.tour-track { display: flex; transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.tour-slide { min-width: 100%; padding: 8px 28px 4px; }
+.tour-slide h2 { margin: 0 0 6px; font-size: 21px; font-weight: 800; letter-spacing: -0.01em; color: var(--ink-1); }
+.tour-lede { margin: 0 0 12px; color: var(--ink-2); font-size: 14px; line-height: 1.55; }
+.tour-q { font-weight: 700; color: var(--accent-deep); }
+.tour-pts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 6px; }
+.tour-pt { border: 1px solid var(--line-1); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; line-height: 1.5; color: var(--ink-2); }
+.tour-pt b { display: block; color: var(--ink-1); font-size: 13px; margin-bottom: 2px; }
+.tour-foot { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px 18px; border-top: 1px solid var(--line-1); margin-top: 12px; }
+.tour-foot-r { display: flex; gap: 8px; align-items: center; }
+.sop-btn.tour-skip { border-color: transparent; color: var(--ink-3); }
+.sop-btn.tour-skip:hover { color: var(--ink-1); }
+.tour-dots { display: flex; gap: 7px; }
+.tour-dots button { width: 8px; height: 8px; border-radius: 999px; border: 0; padding: 0; cursor: pointer; background: var(--line-2); transition: width 0.25s, background 0.25s; }
+.tour-dots button.is-on { width: 22px; background: var(--accent); }
+
+/* shared illustration parts */
+.tour-art { height: 272px; border-radius: 12px; background: var(--accent-softer); border: 1px solid var(--accent-soft); margin: 8px 0 18px; position: relative; overflow: hidden; font-size: 12px; color: var(--ink-2); }
+.tour-chip { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; background: #fff; border: 1px solid var(--line-2); color: var(--ink-1); white-space: nowrap; }
+.tour-chip-d { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.tour-h { font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.tour-st { font-size: 9.5px; font-weight: 800; padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+.tour-st--ok { background: #e6f5ec; color: #1f9d55; }
+.tour-st--warn { background: #fdf1dc; color: #9a5b00; }
+
+/* step 1 — the desk's three zones */
+.tour-mini { position: absolute; inset: 18px 24px; display: grid; grid-template-columns: 1fr 160px; gap: 14px; }
+.tour-mini-left { display: grid; grid-template-rows: auto 1fr; gap: 14px; }
+.tour-zone { position: relative; border-radius: 10px; background: #fff; border: 2px solid var(--accent); padding: 10px 12px; font-size: 11.5px; color: var(--ink-3); }
+.tour-zone-t { display: block; font-weight: 800; color: var(--ink-1); font-size: 12.5px; }
+.tour-badge { position: absolute; top: -10px; left: -10px; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 12px; font-weight: 800; display: grid; place-items: center; box-shadow: 0 0 0 3px var(--accent-softer); }
+.tour-bar { height: 7px; border-radius: 4px; background: var(--line-1); margin: 6px 0; }
+.tour-rep { display: flex; gap: 6px; align-items: center; margin-top: 6px; color: var(--ink-2); }
+
+/* step 2 — mentor graph */
+.tour-graph { position: absolute; inset: 14px 20px; display: grid; grid-template-columns: 1fr 70px 1.15fr 70px 1fr; align-items: center; }
+.tour-g-col { display: flex; flex-direction: column; gap: 9px; align-items: stretch; }
+.tour-cap { font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); text-align: center; }
+.tour-g-arrow { text-align: center; font-size: 10px; font-weight: 800; color: var(--ink-3); }
+.tour-g-arrow span { display: block; font-size: 30px; line-height: 1; color: var(--accent); }
+.tour-node { background: #fff; border: 1.5px solid var(--line-2); border-radius: 10px; padding: 7px 10px; font-size: 12px; font-weight: 700; text-align: center; color: var(--ink-1); }
+.tour-node small { display: block; font-weight: 500; color: var(--ink-3); font-size: 10.5px; }
+.tour-node--me { border: 2px solid var(--accent); padding: 16px 12px; font-size: 14px; }
+.tour-node--new { border-style: dashed; }
+
+/* steps 3 and 5 — old way vs new way */
+.tour-cmp { position: absolute; inset: 16px; display: grid; grid-template-columns: 200px 1fr; gap: 14px; }
+.tour-cmp--loop { grid-template-columns: 210px 1fr; }
+.tour-old { background: #fff; border: 1px solid var(--line-2); border-radius: 10px; padding: 10px 12px; font-size: 11px; color: var(--ink-3); opacity: 0.85; }
+.tour-old pre { margin: 6px 0 0; font-family: var(--font-mono); font-size: 10.5px; line-height: 1.45; color: var(--ink-4); white-space: pre-wrap; }
+.tour-old-note { margin-top: 6px; }
+.tour-new { background: #fff; border: 2px solid var(--accent); border-radius: 10px; padding: 10px 14px; }
+.tour-new .tour-h { color: var(--accent-deep); }
+.tour-chain { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; }
+.tour-hop { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); }
+.tour-hop-ag { min-width: 132px; }
+.tour-hop-arrow { color: var(--accent); font-weight: 800; }
+.tour-judg { font-size: 10.5px; color: #9a5b00; font-style: italic; margin: -4px 0 0 140px; }
+.tour-clause { font-size: 11.5px; color: var(--ink-2); margin-top: 5px; }
+.tour-clause em, .tour-sr em { font-style: normal; font-weight: 800; color: var(--ink-1); display: inline-block; min-width: 82px; }
+.tour-rounds { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; }
+.tour-rd { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--ink-2); border: 1px solid var(--line-1); border-radius: 8px; padding: 4px 8px; }
+.tour-rd--hit { border-color: #1f9d55; background: #f1faf4; }
+.tour-rd .tour-st { margin-left: auto; }
+.tour-rd-n { width: 18px; height: 18px; border-radius: 50%; flex: none; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-deep); font-size: 10px; font-weight: 800; }
+
+/* step 4 — CLI plan vs signed spec */
+.tour-two { position: absolute; inset: 12px; display: grid; grid-template-columns: 0.8fr 1.35fr; gap: 14px; }
+.tour-card { background: #fff; border: 1px solid var(--line-2); border-radius: 10px; padding: 10px 12px; font-size: 11.5px; color: var(--ink-2); }
+.tour-card .tour-h { margin-bottom: 6px; }
+.tour-card--p { border: 2px solid var(--accent); }
+.tour-card--p > .tour-h { color: var(--accent-deep); }
+.tour-tl { font-size: 11.5px; padding: 2px 0; }
+.tour-tl--x { text-decoration: line-through; color: #b4425a; }
+.tour-tl--add { color: #9a5b00; }
+.tour-tl small { font-size: 9.5px; color: var(--ink-3); }
+.tour-said { margin: 6px 0; background: var(--line-1); border-radius: 8px; padding: 4px 8px; font-size: 11px; font-style: italic; }
+.tour-lim { font-size: 10.5px; color: var(--ink-3); }
+.tour-spec { border: 1px solid var(--line-2); border-radius: 8px; padding: 5px 9px; margin-bottom: 6px; }
+.tour-sh { display: flex; justify-content: space-between; font-size: 10.5px; margin-bottom: 2px; }
+.tour-sh span { color: #1f9d55; font-weight: 700; }
+.tour-sr { font-size: 11px; padding: 1px 0; }
+.tour-north { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.tour-north em { font-size: 10px; color: var(--ink-3); }
+.tour-rl { border: 1.5px solid #b26a00; background: #fffaf1; border-radius: 8px; padding: 5px 9px; }
+.tour-rlh { font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em; color: #9a5b00; }
+.tour-del { font-size: 11px; color: #b4425a; text-decoration: line-through; }
+.tour-add { font-size: 11px; color: #1f9d55; font-weight: 700; }
+.tour-rlf { display: flex; gap: 5px; align-items: center; margin-top: 4px; }
+.tour-mb { font-size: 10px; font-weight: 700; border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 7px; background: #fff; }
+.tour-mb--p { background: var(--accent); color: #fff; border-color: var(--accent); }
+.tour-same { margin-left: auto; font-size: 9.5px; color: var(--ink-3); }
+
+/* The ⓘ pulses once after the tour closes, so the owner sees where it went. */
+.md-h1-info--pulse { position: relative; }
+.md-h1-info--pulse::after {
+  content: ''; position: absolute; inset: -4px; border-radius: 50%;
+  border: 2px solid var(--accent); animation: tour-pulse 1.6s ease-out 3;
+  pointer-events: none;
+}
+@keyframes tour-pulse { from { opacity: 1; transform: scale(0.7); } to { opacity: 0; transform: scale(1.4); } }
+
+@media (max-width: 720px) {
+  .tour-art { display: none; }
+  .tour-pts { grid-template-columns: 1fr; }
+  .tour-slide { padding: 8px 18px 4px; }
+  .tour-foot { flex-direction: column-reverse; gap: 12px; align-items: stretch; }
+  .tour-foot-r { justify-content: flex-end; }
+  .tour-dots { justify-content: center; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour, .tour-track, .tour-dots button { animation: none; transition: none; }
+  .md-h1-info--pulse::after { animation: none; display: none; }
+}
+
+/* ————————————————— empty-desk onboarding zero-state ————————————————— */
+.md-zero { padding: 6px 0 4px; }
+.md-zero-inner { max-width: 760px; margin: 0 auto; }
+/* Heading is a single line now (the explanatory blurb is gone), so the icon
+   centres against it instead of hanging off the first line of a paragraph. */
+.md-zero-head { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+.md-zero-ic {
+  flex: none; width: 40px; height: 40px; border-radius: 12px;
+  background: var(--accent-deep); color: var(--ink-on-accent);
+  display: flex; align-items: center; justify-content: center;
+}
+.md-zero-t { font-size: 18px; font-weight: 800; color: var(--ink-1); letter-spacing: -0.01em; margin: 0; }
+/* The card grid these classes styled (.md-zero-groups / -group / -group-h /
+   -group-t / -group-line / -grid) is gone — the zero state now renders one-line
+   rows through the shared SampleIdeaList, which brings its own
+   sampleIdeaList.css. Only the header above survives here. */
+
+/* ————————————————— shared modal chrome (was: dashboard overlay) —————————————————
+   These rules outlived the briefing overlay they were written for. A briefing
+   is a route now (`components/briefing/`), with its own stylesheet; what is
+   left here is the generic modal shell, still used by TodoRail's "How your
+   plate fills up" info modal. The briefing-only rules that lived below
+   (.md-ov-tabs / -tab / -refreshed / -body, and the whole .md-sample* block)
+   went with the overlay and the tab strip. */
+.md-ov {
+  position: fixed; inset: 0; z-index: 60; background: rgba(31, 24, 38, 0.4);
+  display: flex; align-items: flex-start; justify-content: center; padding: 40px 24px;
+  backdrop-filter: blur(2px); animation: md-fade var(--t-slow) ease;
+}
+@keyframes md-fade { from { opacity: 0; } to { opacity: 1; } }
+.md-ov-card {
+  width: min(940px, 100%); max-height: calc(100vh - 80px); overflow-y: auto; background: #fff;
+  border-radius: var(--r-lg); box-shadow: var(--shadow-pop); padding: 26px 32px 30px;
+  animation: md-rise var(--t-slow) cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+@keyframes md-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.md-ov-card::-webkit-scrollbar { width: 10px; }
+.md-ov-card::-webkit-scrollbar-thumb { background: #e6def0; border-radius: 999px; border: 2px solid #fff; }
+.md-ov-top { display: flex; align-items: center; }
+.md-ov-eyebrow { font-size: 10.5px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-4); }
+.md-ov-x { margin-left: auto; border: 0; background: var(--bg-pill-muted); color: var(--ink-3); border-radius: 8px; padding: 6px; cursor: pointer; display: inline-flex; }
+.md-ov-x:hover { background: var(--accent-softer); color: var(--accent-deep); }
+.md-ov-title { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; margin: 6px 0 14px; color: var(--ink-1); }
+/* ————————————————— toast ————————————————— */
+.md-toast {
+  position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); z-index: 70;
+  display: inline-flex; align-items: center; gap: 8px; background: var(--ink-1); color: #fff;
+  border-radius: 999px; padding: 10px 18px; font-size: 12.5px; font-weight: 700; box-shadow: var(--shadow-pop);
+  animation: md-toast-in var(--t-slow) cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.md-toast svg { color: var(--av-green); }
+/* The refusal variant of the same pill — a link that didn't land, said in the
+   channel the confirmation would have used. Two departures, both forced by the
+   sentence rather than chosen: the glyph changes because a green check beside
+   "this didn't get linked" is a claim the text contradicts, and the pill wraps
+   because this sentence names a command the owner is meant to read. The
+   confirmation stays exactly as it was — one short line, one round pill. */
+.md-toast.warn {
+  max-width: min(620px, calc(100vw - 40px)); align-items: flex-start;
+  border-radius: 14px; text-align: left; line-height: 1.55; font-weight: 600;
+}
+.md-toast.warn svg { color: var(--av-amber); flex: none; margin-top: 2px; }
+@keyframes md-toast-in { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* ————————————————— right rail shell (To-do | SOP) ————————————————— */
+.md-rail { display: flex; flex-direction: column; height: 100%; background: var(--bg-rail); }
+
+/* density nudges */
+[data-density="dense"] .md-card { padding: 11px 14px 11px 16px; }
+[data-density="dense"] .md-list { gap: 8px; }
+[data-density="spacious"] .md-card { padding: 18px 20px 16px 22px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   My Desk — top composer wrapper + take-over overlay + tabbed To-do rail.
+   Ported from design_handoff_todo_takeover/sidebar-redesign-desk.css; reuses
+   the existing design tokens (styles/design/tokens.css). The composer itself
+   is the Tailwind DeskComposer — only its outer padding lives here.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* top-of-desk composer band */
+.md-cmd-band { padding: 14px 30px; border-bottom: 1px solid var(--line-1); background: var(--bg-canvas); }
+
+/* center column wrapper — desk + take-over overlay share one positioned box */
+.desk-wrap { position: relative; flex: 1 1 auto; min-width: 0; display: flex; overflow: hidden; }
+.desk-wrap .md { flex: 1; min-width: 0; }
+
+/* ————————————————— tabbed side rail (To-do | Pulse) ————————————————— */
+.side-tabs { flex: none; display: flex; gap: 5px; padding: 10px 12px; border-bottom: 1px solid var(--line-1); }
+.side-tab {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border: 1px solid transparent; background: transparent; color: var(--ink-3);
+  border-radius: 9px; padding: 8px 8px; font-size: 12px; font-weight: 800; cursor: pointer;
+  font-family: inherit; transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.side-tab:hover { background: #fff; color: var(--ink-2); }
+.side-tab.active { background: #fff; color: var(--accent-deep); border-color: var(--line-2); box-shadow: var(--shadow-1); }
+.side-tab svg { opacity: 0.85; }
+.side-tab-c {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 800; color: #fff; background: var(--accent);
+  border-radius: 999px; min-width: 16px; height: 16px; padding: 0 5px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+
+/* ————————————————— to-do panel ————————————————— */
+/* `position: relative` makes `.todo` the containing block for the ROW popover,
+   the capture autocomplete and the manage sheet. All three are `position:
+   absolute` inside the rail rather than portalled, so they cannot outlive an
+   unmount — but they are SIBLINGS of `.todo-scroll`, not children of it, so
+   they neither scroll with the rows nor clip at the scrollport edge. (The
+   control-strip popovers resolve against `.todo-ctl-wrap`; the full mount-site
+   list is on `.pop`.) */
+.todo { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.todo-add { flex: none; padding: 13px 14px 11px; border-bottom: 1px solid var(--line-1); }
+/* Search box + the `+` that acts on it, side by side. Shared by BOTH rails —
+   the To-do box captures what you typed, the SOP box opens the editor named by
+   it, and they have to look like one control doing one thing. */
+.todo-add-row { display: flex; align-items: center; gap: 8px; }
+.todo-add-row > .todo-add-box { flex: 1; min-width: 0; }
+.todo-add-box {
+  display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--line-2);
+  border-radius: 10px; padding: 8px 9px 8px 11px; transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.todo-add-box:focus-within { border-color: var(--accent-soft); box-shadow: 0 0 0 3px var(--accent-softer); }
+.todo-add-box > svg { color: var(--ink-4); flex: none; }
+.todo-add-in { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font-family: inherit; font-size: 13px; font-weight: 600; color: var(--ink-1); }
+.todo-add-in::placeholder { color: var(--ink-4); font-weight: 500; }
+/* The `+`. Square, same height as the box beside it, and DISABLED rather than
+   hidden while the box is empty: a control that vanishes teaches nothing,
+   where a greyed one paired with the "type a task to add it" tooltip says both
+   that the action exists and what unlocks it. */
+.todo-add-new {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border: 1px solid var(--accent-soft); background: var(--accent-softer);
+  color: var(--accent-deep); border-radius: 10px; cursor: pointer; font-family: inherit;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+}
+.todo-add-new:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
+.todo-add-new:disabled {
+  background: transparent; border-color: var(--line-2); border-style: dashed;
+  color: var(--ink-4); cursor: default;
+}
+/* circled-i affordance on the right edge of the capture box — always visible,
+   opens the "how agents publish to-dos" modal. */
+.todo-add-info {
+  flex: none; border: 0; background: transparent; color: var(--ink-4); border-radius: 999px;
+  padding: 3px; cursor: pointer; display: inline-flex; transition: color var(--t-fast), background var(--t-fast);
+}
+.todo-add-info:hover { color: var(--accent-deep); background: var(--accent-softer); }
+
+/* ————————————————— to-do publish-info modal ————————————————— */
+/* narrower, quieter variant of the shared .md-ov-card overlay */
+.todo-info-card { width: min(520px, 100%); padding: 24px 26px 26px; }
+.todo-info-title { font-size: 22px; margin: 6px 0 4px; }
+.todo-info-body { font-size: 13px; line-height: 1.6; color: var(--ink-2); }
+.todo-info-body p { margin: 0; }
+.todo-info-lbl {
+  font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-4); margin: 18px 0 8px;
+}
+.todo-info-cmd {
+  position: relative; background: var(--bg-pill-muted); border: 1px solid var(--line-2);
+  border-radius: var(--r-md); padding: 13px 15px; padding-right: 74px;
+  font-size: 13px; font-weight: 600; line-height: 1.5; color: var(--ink-1);
+}
+.todo-info-copy {
+  position: absolute; top: 9px; right: 9px; display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid var(--line-2); background: #fff; color: var(--ink-3); border-radius: 7px;
+  padding: 4px 8px; font-size: 10.5px; font-weight: 800; font-family: inherit; cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast);
+}
+.todo-info-copy:hover { color: var(--accent-deep); border-color: var(--accent-soft); }
+.todo-info-copy svg { flex: none; }
+.todo-info-foot { margin-top: 16px !important; font-size: 11.5px; color: var(--ink-4); line-height: 1.55; }
+
+.todo-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 12px 22px; }
+.todo-scroll::-webkit-scrollbar { width: 8px; }
+.todo-scroll::-webkit-scrollbar-thumb { background: #e6def0; border-radius: 999px; border: 2px solid var(--bg-rail); }
+.todo-scroll::-webkit-scrollbar-track { background: transparent; }
+
+.todo-plate-h { display: flex; align-items: center; gap: 7px; margin: 8px 4px 2px; font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.todo-plate-c { font-family: var(--font-mono); color: var(--ink-4); }
+
+/* an item */
+.todo-item {
+  /* gap 9px -> 7px, with the circle 19px -> 15px: ~24px of every row comes
+     back to the title, which is where the plate was wrapping. */
+  position: relative; display: flex; gap: 7px; padding: 8px 8px 9px; border-radius: 10px;
+  border: 1px solid transparent;
+  /* `outline-color` is the cross-highlight's, at the foot of this file. */
+  transition: background var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast), outline-color var(--t-med);
+}
+.todo-item:hover { background: #fff; border-color: var(--line-2); box-shadow: var(--shadow-1); cursor: pointer; }
+
+/* THE INK SHRANK; THE TAP TARGET DID NOT. 19px -> 15px with the border
+   2px -> 1.5px, and `::after` restores the lost area as a transparent ring —
+   ~31px on desktop, widened to 40px on touch below. Shrinking this WITHOUT
+   the ring is the regression to watch for: the control would still look
+   right and become hard to hit. `position: relative` is what the ring is
+   positioned against and is load-bearing, not decoration. */
+.todo-check {
+  position: relative;
+  flex: none; width: 15px; height: 15px; margin-top: 1px; border-radius: 999px; border: 1.5px solid var(--line-strong);
+  background: #fff; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  color: #fff; transition: background var(--t-fast), border-color var(--t-fast);
+}
+/* THE LEFT SIDE IS TRIMMED ON PURPOSE, and it is not symmetry for its own
+   sake. The drag grip is an absolute strip in the left gutter whose right edge
+   lands at x = 6px (`left: -10px` + `width: 16px`, measured from the row's
+   padding box) — 2px short of this circle, which starts at the row's 8px
+   padding. That 2px is all the room the ring has on this side: a uniform -8px
+   ring would start at x = 0 and reach 6px back over the grip, and the ring,
+   being later in the DOM, WINS the hit test wherever it overlaps. Touch keeps
+   the same 6px boundary by moving the strip left rather than growing it right.
+   Taking area from a neighbouring control to pad this one is not a bigger
+   target, just a moved one. Grow the ring rightward into the body's slack
+   instead, where nothing is competing for the pixels. */
+.todo-check::after {
+  content: ''; position: absolute; inset: -8px -8px -8px -2px; border-radius: 999px;
+}
+.todo-check svg { opacity: 0; transition: opacity var(--t-fast); }
+.todo-check:hover { border-color: var(--accent); }
+.todo-check.on { background: var(--av-green); border-color: var(--av-green); }
+.todo-check.on svg { opacity: 1; }
+
+.todo-body { flex: 1; min-width: 0; }
+/* The vertical padding is bled straight back out by an equal negative margin:
+   the loadable box grows into the row's own padding — the band above the title
+   and below the last chip, which reads as part of the row and did nothing —
+   while every glyph stays on the pixel it was already on. Measured on a plain
+   undrafted row (headless chromium, elementFromPoint over the row): the share
+   of it that loads goes 11% -> 26%, row height unchanged to the hundredth of a
+   pixel. Keep both halves — padding alone would push every row taller. */
+.todo-body--open { display: block; width: 100%; text-align: left; border: 0; background: transparent; font-family: inherit; cursor: pointer; padding: 4px 0; margin: -4px 0; }
+.todo-text { font-size: 13px; font-weight: 600; color: var(--ink-1); line-height: 1.42; text-wrap: pretty; }
+/* THE DIM STAYS, THE STRIKETHROUGH GOES. Strikethrough means FINISHED, and an
+   archived row is merely FILED — it can be Working, and one carrying a Working
+   chip under a struck-through title would contradict itself on one line. Dim
+   reads as "set aside", which is exactly what archiving is. */
+.todo-item.archived .todo-text { color: var(--ink-4); }
+
+/* inline rename — click the title to edit it in place.
+   The title needs a cue of its OWN inside a row that already lights up on
+   hover, or the split hit area (title renames, rest of the body loads) is
+   invisible: row-hover alone says "this row does something", never "this part
+   does something else". Hence the cue fires on hovering the TITLE, not the row.
+   `cursor: text` is half the signal — it contradicts `.todo-item:hover`'s
+   pointer, which is exactly the point.
+
+   SHRINK-WRAPPED, and NOT the full-width block div this was: the title owns a
+   plain click, so every pixel its box covers is a pixel that cannot load the
+   row — and a full-width block claimed the whole line whether the text filled
+   it or not. On a short title that handed most of the row to rename; on a
+   plain undrafted to-do, where nothing renders below, it handed over the
+   whole row and the item could not be loaded at all. `max-width: 100%` keeps
+   a long title wrapping exactly as it did.
+
+   `block` + `width: fit-content`, NOT `inline-block` — and that swap IS the
+   alignment fix. As an inline-block the title rode a LINE BOX inside the body
+   <button>, and Tailwind's preflight hands that button `font-size: 100%;
+   line-height: inherit`, i.e. a 16px/24px strut. A ONE-LINE title's box is
+   18.45px — shorter than the strut — so the line box stayed 24px and the
+   strut's ascent pushed the title 4px down while `.todo-check` stayed pinned
+   to the row's padding box. Every single-line row on the plate sat 4px below
+   its own circle; every wrapped one lined up, because its taller box
+   swallowed the strut. A block box makes no line box, so there is no strut to
+   clear, and `fit-content` keeps the exact shrink-wrap the paragraph above is
+   about. Reverting to `inline-block` brings the 4px back. */
+.todo-text--edit { display: block; width: fit-content; max-width: 100%; border-radius: 5px; cursor: text; transition: background var(--t-fast); }
+.todo-text--edit:hover { background: var(--bg-pill-muted); }
+.todo-text--edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* The field inherits the title's metrics from `.todo-text` (it carries both
+   classes) — only `font-family` needs restating, because form controls do not
+   inherit it. The padding is bled back out with equal negative margins so the
+   first line's glyphs land on the pixel they were already on, rather than
+   jumping right and down by the padding when the editor opens. content-box
+   keeps `width: 100%` meaning "the title's width" rather than "the title's
+   width minus the padding I just added".
+
+   What this does NOT fix, because an <input> cannot: a title long enough to
+   WRAP is two rendered lines in read mode and one scrolling line in the field,
+   so opening it shortens the row and the rows below slide up. A textarea would
+   hold the height but brings its own Enter problem — Enter is the save key
+   here, so it would have to be intercepted rather than inserting a newline.
+   Left as-is deliberately; revisit if long titles turn out to be the norm. */
+.todo-rename {
+  display: block; box-sizing: content-box; width: 100%;
+  margin: -3px -6px; padding: 2px 5px;
+  border: 1px solid var(--accent-soft); border-radius: 6px; background: #fff;
+  font-family: inherit;
+}
+.todo-rename:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-softer); }
+
+.todo-meta { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+/* draft preview — the queued message itself, quiet grey over the agent it is
+   addressed to (rather than a one-line pill): the draft reads as a draft, and
+   the recipient is legible without opening the take-over. Takes a whole wrap
+   line of .todo-meta so the two rows never share a line with due/source chips. */
+.todo-draft { flex: 0 0 100%; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 5px; margin-top: 1px; }
+.todo-draft-msg {
+  max-width: 100%; font-size: 11.5px; font-weight: 500; line-height: 1.45; color: var(--ink-3);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+/* FULL WIDTH, not shrink-wrapped, and that is what buys the attachment badge a
+   home: the recipient line already had the row to itself and ended well short
+   of its right edge, so `margin-left: auto` on the badge parks the count in
+   dead space instead of letting it claim a slot in the `.todo-meta` wrap
+   below. Going back to `inline-flex` collapses the line onto the name and the
+   badge lands touching it. */
+.todo-draft-to { display: flex; align-items: center; gap: 5px; width: 100%; max-width: 100%; min-width: 0; font-family: var(--font-mono); font-size: 10.5px; font-weight: 700; color: var(--ink-3); }
+.todo-draft-to > :first-child { flex: none; }
+.todo-draft-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-hint { font-size: 10px; font-weight: 700; color: var(--ink-4); }
+/* The blank-meta hit strip: a whole wrap line under the title, on the one row
+   shape that would otherwise put NOTHING there — no draft, no due, no source.
+   The title owns a plain click, so a row with an empty meta had no pixels left
+   that load; this is the line that gives them back, which is why it takes
+   `flex: 0 0 100%` rather than sitting inline.
+
+   Faded rather than hidden. `opacity` keeps the strip laid out and hit-testable
+   at rest, so the target does not appear and vanish with the pointer — and the
+   plate stays quiet until hover, which is the rest of the row's rule too.
+   `visibility`/`display` would take the hit area away with the text.
+
+   It costs no height. As a flow line it did: a ~15px line box plus
+   `.todo-meta`'s 6px top margin, on a row whose own content is one 18px title —
+   so ~37% of a bare row was an invisible hint, and a run of bare items on the
+   plate read as double-spaced, which is what it was. `.todo-item.bare` below is
+   where that height comes back. Drafted rows were never affected — their meta
+   already renders. */
+.todo-hint--load { flex: 0 0 100%; font-weight: 600; opacity: 0; transition: opacity var(--t-fast); }
+.todo-item:hover .todo-hint--load { opacity: 1; }
+/* THE BARE ROW PAYS FOR ITS HIT AREA IN SPACE IT ALREADY OWNS — no draft, no
+   due, no source, no files, so `.todo-meta` holds the strip and nothing else
+   (`metaEmpty` in TodoItem.tsx is that exact condition, and puts this class on).
+
+   The strip leaves flow, and the body button's bleed grows from 4px to the
+   row's full 8/9px padding in its place. That trades a 21px line for a hit area
+   that is strictly LARGER: the whole row loads, top band to bottom band, rather
+   than the title's line plus one 15px strip under it. The hint text then rides
+   the bottom band, line-boxed to fit inside those 9px.
+
+   All three halves are load-bearing. Without the bleed the row stops loading
+   under the hint that advertises it; without the absolute positioning the 21px
+   returns; without the tightened `line-height` the text stands taller than the
+   band and paints over the row below. */
+.todo-item.bare .todo-body { position: relative; }
+.todo-item.bare .todo-body--open { padding: 8px 0 9px; margin: -8px 0 -9px; }
+.todo-item.bare .todo-meta { position: absolute; inset: auto 0 1px 0; margin: 0; }
+/* ONE LINE, ALWAYS. The band is a bottom-pinned strip at `height: auto`, so a
+   hint that wraps grows UPWARD out of the band, not down — straight over the
+   title's last line. Measured in headless chromium: the sentence needs 137px at
+   10px/600, and below that the strip doubles to 18px and eats 9.5px of the
+   title. The body gets there on a phone even on a wide plate, because the touch
+   block below takes `.todo-actions` out of float and makes it an ordinary flex
+   sibling — the body is what pays for those icons. The band is 9px and cannot
+   hold a second line, so ellipsize rather than wrap; the strip is a hit target
+   first, and the words on it are a cue rather than content. 9px type buys ~10%
+   more of the sentence before it clips. */
+.todo-item.bare .todo-hint--load {
+  line-height: 9px; font-size: 9px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* THE BAND *IS* THE ROW'S OWN 9px BOTTOM PADDING, so the title's descenders and
+   the hint's ascenders were both reaching into the same pixels: measured, the
+   title's last line and the strip overlapped by 0.5px on EVERY bare row — a
+   one-line title included, not just a wrapped one. It only reads as damage where
+   the last line ends in a descender, which is why it survived the rows this
+   block was tuned on. 3px of clearance back (0.5px overlap -> 3.5px gap), and as
+   MARGIN not padding: `.todo-text` is also on the rename <input> and on the
+   shrink-wrapped rename cue, so padding would fight `.todo-rename`'s own
+   shorthand AND hand 3px more of the row to rename instead of to load. Scoped to
+   `--open` for the same reason the bleed above is — while the field is open
+   there is no strip under it to clear. Costs 3px on a bare row. */
+.todo-item.bare .todo-body--open .todo-text { margin-bottom: 3px; }
+/* …EXCEPT WHILE THE TITLE IS BEING RENAMED, and this rule is the whole reason
+   the bleed above can be scoped to `--open`. `BodyShell` drops to a plain <div>
+   for the duration (an <input> inside a <button> is invalid HTML), so that box
+   gets no bleed — it is the title's 18px and nothing else — while the meta is
+   still absolute against it, which lands the strip 9px INSIDE the rename
+   field and paints the hint straight across the text being typed.
+
+   Hidden, not re-flowed. The strip is a hit target first: on a div there is no
+   hit to protect, its sentence is not true of the element underneath it, and
+   returning it to flow would jump the row 18px taller the instant the field
+   opens. This is the one shape where taking its pixels is right. */
+.todo-item.bare .todo-body:not(.todo-body--open) .todo-meta { display: none; }
+/* Real stored bytes on a row. Sibling of .todo-hint, deliberately its own rule:
+   the hint is agent-provenance ("N files + prompt"), this is "this item carries
+   attachments" and can appear on a self-captured row too. */
+.todo-attach {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10px; font-weight: 700; color: var(--ink-4);
+}
+/* The same badge riding the draft-recipient line, flush right. `flex: none` so
+   it never shrinks ahead of the name — `.todo-draft-who` is the thing that is
+   supposed to ellipsize. */
+.todo-attach--inline { margin-left: auto; padding-left: 6px; flex: none; }
+
+/* row actions */
+.todo-actions {
+  /* Anchor to the checkbox band, not the full row: the tall drag grip inflates
+     row height (esp. the ~40px mobile tap target), which would drag these icons
+     below the checkbox line. height:33px = 2×(8px row pad + 1px check margin +
+     7.5px half-circle) so the cluster centers on the check circle (16.5px) in
+     both viewports. Follows the checkbox geometry if that changes — it moved
+     from 37px/18.5px when the circle went 19px -> 15px. */
+  position: absolute; top: 0; right: 6px; height: 33px; z-index: 1;
+  display: flex; align-items: center; gap: 2px; padding-left: 28px;
+  background: linear-gradient(90deg, transparent, #fff 42%);
+  opacity: 0; pointer-events: none; transition: opacity var(--t-fast);
+}
+.todo-item:hover .todo-actions,
+.todo-item.is-open .todo-actions { opacity: 1; pointer-events: auto; }
+.todo-item.is-open .todo-actions { background: linear-gradient(90deg, transparent, var(--accent-softer) 42%); }
+.todo-act { border: 0; background: transparent; color: var(--ink-4); border-radius: 6px; padding: 4px; cursor: pointer; display: inline-flex; }
+.todo-act:hover { background: var(--bg-pill-muted); color: var(--accent-deep); }
+.todo-act:disabled { cursor: default; }
+
+/* THE ROW'S OVERFLOW MENU — Labels + Delete behind one ⋮.
+   The cluster is hover-revealed, so without the `is-menu` pin the trigger
+   fades out the moment the pointer leaves the row for the popover it just
+   opened, and the menu is left hanging over nothing. The raised z-index is the
+   other half: `.todo-actions` is a stacking context at `z-index: 1`, which the
+   next row's own cluster and grip would otherwise draw level with. */
+.todo-item.is-menu .todo-actions { opacity: 1; pointer-events: auto; z-index: 30; }
+.todo-menu { position: relative; display: inline-flex; }
+.todo-menu-pop {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
+  min-width: 134px; padding: 4px; background: #fff;
+  border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow-pop);
+}
+/* `.todo-scroll` is `overflow-y: auto`, so the last rows on screen would clip
+   their own menu. TodoRowMenu measures the trigger against the scroller at
+   OPEN time and adds this. */
+.todo-menu-pop.up { top: auto; bottom: calc(100% + 4px); }
+.todo-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  border: 0; background: transparent; border-radius: 6px; padding: 6px 8px;
+  font-family: inherit; font-size: 11.5px; font-weight: 600; color: var(--ink-2);
+  text-align: left; cursor: pointer; white-space: nowrap;
+}
+.todo-menu-item svg { flex: none; color: var(--ink-4); }
+.todo-menu-item:hover { background: var(--bg-pill-muted); color: var(--accent-deep); }
+.todo-menu-item:hover svg { color: var(--accent-deep); }
+/* --prio-urgent-fg on --prio-urgent-bg is 7.31:1 — the same pair the Failed
+   chip uses, so destructive reads the same everywhere on the plate. */
+.todo-menu-item.danger:hover { background: var(--prio-urgent-bg); color: var(--prio-urgent-fg); }
+.todo-menu-item.danger:hover svg { color: var(--prio-urgent-fg); }
+/* drag grip — NO INK LEFT, and out of flex flow entirely.
+   It was six dots, then a 3px `::before` rail. Both were permanent chrome
+   ahead of the first character of the task, and — the reason this rule now
+   looks the way it does — deleting only the rail would have quieted the row
+   while returning ZERO width, which was the actual complaint. Absolutely
+   positioned in the panel's left gutter, it costs the row nothing: 17px of
+   flow on desktop, 33px on touch, handed straight to the title.
+
+   `cursor: grab` is the only cue that survives. A pointer crossing the gutter
+   still discovers the handle; touch does not, which is the accepted cost. The
+   cheap reversal if it proves undiscoverable is a rail that fades in on ROW
+   hover only — one rule, no layout change, since the box already sits here. */
+.todo-grip {
+  /* Full row height instead of a 17px box on the check circle's centerline:
+     with no ink to align, the target may as well be the whole left edge. That
+     is what pays for the width — 16px of strip, versus 24/40px of flex child
+     plus a row `gap`. It cannot grow WIDER: `left + width` must clear the
+     archive circle's tap ring, which starts 2px left of the row's 8px padding.
+     See the `.todo-check::after` comment and the desk.css test that pins the
+     arithmetic. */
+  position: absolute; left: -10px; top: 0; bottom: 0; width: 16px; z-index: 2;
+  box-sizing: border-box; background: transparent; border: 0; color: var(--line-strong);
+  cursor: grab; padding: 0; touch-action: none; user-select: none;
+}
+.todo-grip:active { cursor: grabbing; }
+
+/* open highlight */
+.todo-item.is-open { background: var(--accent-softer); border-color: var(--accent-soft); box-shadow: var(--shadow-1); }
+.todo-item.is-open .todo-check { border-color: var(--accent); }
+
+/* PRESS-AND-HOLD FEEDBACK. The row squeezes while the hold timer runs, which
+   is the only confirmation a touch user gets that the gesture was heard before
+   it fires — the grip's `cursor: grab` says nothing to a finger. `transform`
+   only, so it composites and cannot reflow the rail mid-gesture. */
+.todo-item.pressing { transform: scale(0.985); transition: transform 180ms var(--ease-leave); }
+
+/* Painted on <body> for the DURATION OF A DRAG and removed on drop. It cannot
+   live on `.todo-item` instead: a permanent `touch-action: none` on the rows
+   would stop the rail scrolling whenever a finger lands on one, which is most
+   of the rail. */
+body.todo-dragging { user-select: none; touch-action: none; -webkit-touch-callout: none; }
+
+/* drag + leave transitions */
+.todo-item.dragging { opacity: 0.4; user-select: none; }
+.todo-item.drag-over-top { box-shadow: inset 0 2px 0 0 var(--accent); }
+.todo-item.drag-over-bottom { box-shadow: inset 0 -2px 0 0 var(--accent); }
+.todo-item.leaving { opacity: 0; transform: translateX(16px); transition: opacity var(--t-leave) var(--ease-leave), transform var(--t-leave) var(--ease-leave); pointer-events: none; }
+
+/* touch: no hover to reveal actions — keep them shown + finger-sized */
+@media (hover: none), (pointer: coarse) {
+  /* THE BARE ROW'S ONE AFFORDANCE, UNGATED. `.todo-hint--load` is revealed by
+     `.todo-item:hover` alone, and touch never enters hover — so the single
+     sentence telling you an undrafted row is clickable sat at `opacity: 0`
+     forever on a phone. The only time it appeared was emulated sticky :hover
+     after a tap, i.e. after you had already found the thing it advertises.
+     Shown at rest here; desktop keeps the quiet-until-hover plate. */
+  .todo-hint--load { opacity: 1; }
+  /* THE WHITE SLAB, FIXED. `.todo-actions` floats over the row and paints a
+     fade-to-#fff scrim, which is invisible on desktop only because the row
+     UNDERNEATH is already white on hover. Touch never enters hover: the row
+     stays the lavender rail colour and the scrim reads as a white rectangle
+     clipping the task text. Here the cluster stops floating and becomes an
+     ordinary flex child — the body is `flex: 1`, so it simply reflows
+     narrower and no text can run under an icon. Desktop is untouched. */
+  .todo-actions {
+    position: static; height: auto; align-self: flex-start;
+    padding-left: 0; background: none;
+    opacity: 1; pointer-events: auto;
+  }
+  /* The `is-open` scrim is a SECOND gradient on its own rule and would
+     otherwise survive the reset above. */
+  .todo-item.is-open .todo-actions { background: none; }
+  .todo-act { padding: 9px; } /* ~40px tap target */
+  /* The grip is out of flow in BOTH viewports now, so there is no 40px box to
+     centre any more — it is already the row's full height. All touch does is
+     widen the strip, and it has to buy those 2px by moving LEFT rather than
+     right: `left + width` may not pass the archive circle's tap ring, which
+     starts at 6px (8px row padding − the ring's 2px left inset) in both
+     viewports. −12 + 18 = 6, exactly as −10 + 16 = 6 on desktop. Going to
+     `left: -14px` would push the strip past `.todo-scroll`'s 12px of padding
+     and clip it. */
+  .todo-grip { left: -12px; width: 18px; }
+  /* 15px ink + 12.5px above and below = the same 40px of HEIGHT the icons
+     get. The left stays trimmed to 2px for the reason the desktop rule gives —
+     and it is why the grip strip above widens leftward: both edges meet at
+     x = 6px and neither may cross it. */
+  .todo-check::after { inset: -12.5px -12.5px -12.5px -2px; }
+}
+
+/* archived drawer. The leading glyph is NOT the green check it was: green
+   reads as "these are done", and a row in here can be Working. An Archive box
+   in ordinary ink makes the claim the drawer can actually keep — these are
+   filed away. */
+.todo-arch-drawer { margin-top: 18px; }
+.todo-arch-tog { display: flex; align-items: center; gap: 7px; width: 100%; border: 0; background: transparent; cursor: pointer; font-family: inherit; padding: 4px 4px; font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-4); }
+.todo-arch-tog:hover { color: var(--ink-2); }
+.todo-arch-tog > svg:first-child { color: var(--ink-3); flex: none; }
+.todo-arch-c { font-family: var(--font-mono); color: var(--ink-4); }
+/* How many of the drawer's rows the filter is letting through. Lower-case and
+   un-tracked against the uppercase heading, because it is a live reading of the
+   filter rather than part of the drawer's name. */
+.todo-arch-sub { font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0; text-transform: none; color: var(--ink-4); }
+.todo-arch-line { flex: 1; height: 1px; background: var(--line-1); }
+.todo-arch-tog > svg:last-child { color: var(--ink-4); flex: none; }
+
+/* empty state */
+.todo-empty { text-align: center; padding: 46px 24px; color: var(--ink-4); }
+.todo-empty-ic { display: inline-flex; color: var(--accent-soft); margin-bottom: 10px; }
+.todo-empty-t { font-size: 13.5px; font-weight: 800; color: var(--ink-2); }
+.todo-empty-s { font-size: 11.5px; margin-top: 4px; line-height: 1.5; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SOP library — the right rail's second tab
+   Reuses the to-do rail's chrome (.todo-add / .todo-scroll / .todo-plate-h /
+   .todo-empty) so the two tabs read as siblings; only the card is bespoke.
+   The .ph-* chip rules live in components/composer/promptEditor.css — this
+   file consumes them (.ph-k on the blank previews) and must not shadow them.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.sop { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.sop-hint { font-size: 10.5px; line-height: 1.5; color: var(--ink-4); margin-top: 9px; text-wrap: pretty; }
+
+.sop-item {
+  position: relative; display: block; width: 100%; text-align: left; font-family: inherit; cursor: pointer;
+  background: transparent; border: 1px solid transparent; border-radius: 10px; padding: 10px 11px 9px; margin-bottom: 2px;
+  transition: background var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.sop-item:hover { background: #fff; border-color: var(--line-2); box-shadow: var(--shadow-1); }
+.sop-item.active { background: #fff; border-color: var(--accent-soft); box-shadow: 0 0 0 3px var(--accent-softer); }
+.sop-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.sop-title { font-size: 12.5px; font-weight: 800; color: var(--ink-1); letter-spacing: -0.005em; margin-bottom: 7px; text-wrap: pretty; }
+
+/* A library section heading doubles as its fold toggle. Same look as the
+   plain .todo-plate-h (Recently used), minus the button chrome. Disabled while
+   searching, when every section is forced open. */
+.sop-sec-h { width: calc(100% - 8px); background: none; border: 0; padding: 0; cursor: pointer; text-align: left; font-family: inherit; }
+.sop-sec-h:hover:not(:disabled) { color: var(--ink-2); }
+.sop-sec-h:disabled { cursor: default; }
+.sop-sec-h:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* The title's section prefix, printed only on rows shown outside their own
+   section (Recently used). Inline rather than a floated badge so a long
+   section name wraps with the title instead of squeezing it. */
+.sop-sec {
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ink-4); margin-right: 6px;
+}
+
+.sop-f { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 5px; }
+.sop-to { display: inline-flex; align-items: center; gap: 5px; flex: none; font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: var(--ink-2); }
+.sop-to-none { color: var(--ink-4); font-style: italic; }
+.sop-fields { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; row-gap: 4px; min-width: 0; }
+.sop-ph {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; font-weight: 700; color: var(--accent-deep);
+  background: var(--accent-softer); border: 1px dashed var(--accent-soft); border-radius: 999px; padding: 1px 7px 2px;
+}
+.sop-more { font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; color: var(--ink-4); }
+/* Cadence chip: a scheduled SOP is a standing commitment, not a blank waiting
+   to be filled — solid border, not the dashed placeholder treatment. */
+.sop-cron { color: var(--ink-2); background: var(--bg-sidebar-section); border-style: solid; border-color: var(--line-2); }
+.sop-cron .ph-k { display: inline-flex; align-items: center; color: var(--ink-3); }
+
+.sop-hov {
+  position: absolute; right: 9px; top: 8px; display: flex; align-items: center; gap: 3px;
+  opacity: 0; transform: translateX(-3px); transition: opacity var(--t-fast), transform var(--t-fast);
+}
+.sop-item:hover .sop-hov, .sop-item:focus-visible .sop-hov, .sop-hov:focus-within { opacity: 1; transform: none; }
+.sop-act {
+  display: inline-flex; border: 1px solid var(--line-2); background: #fff; color: var(--ink-3);
+  border-radius: 7px; padding: 4px; cursor: pointer;
+}
+.sop-act:hover { border-color: var(--accent-soft); background: var(--accent-softer); color: var(--accent-deep); }
+.sop-use {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10px; font-weight: 800; color: var(--accent-deep); background: var(--accent-softer);
+  border-radius: 999px; padding: 3px 8px;
+}
+
+/* The full-width "＋ New SOP" button that used to live here is gone: creating
+   an SOP now starts in the search box (type a name, press Enter or hit the `+`
+   beside it), so the affordance is `.todo-add-new`, shared with the To-do
+   rail. */
+
+/* Without this the edit/delete/Use cluster is unreachable on touch. Mirrors
+   the to-do rail's equivalent block. */
+@media (hover: none), (pointer: coarse) {
+  .sop-hov { opacity: 1; transform: none; }
+  .sop-act { padding: 9px; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SOP authoring dialog
+   Namespaced .sop-dlg-* / .sop-field-* / .sop-btn rather than inventing a
+   generic modal system the next feature would have to guess at.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.sop-scrim {
+  position: fixed; inset: 0; z-index: 60; background: rgba(31, 24, 38, 0.4);
+  display: flex; align-items: center; justify-content: center; padding: 32px 24px;
+  backdrop-filter: blur(2px); animation: md-fade var(--t-slow) ease;
+}
+.sop-dlg {
+  width: min(820px, 100%); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
+  background: #fff; border-radius: var(--r-lg); box-shadow: var(--shadow-pop); overflow: hidden;
+  animation: md-rise var(--t-slow) cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.sop-dlg-head { display: flex; align-items: center; gap: 11px; padding: 16px 18px 14px; border-bottom: 1px solid var(--line-1); }
+.sop-dlg-ic { display: inline-flex; color: var(--accent); background: var(--accent-softer); border-radius: 9px; padding: 7px; }
+.sop-dlg-title { font-size: 14.5px; font-weight: 800; color: var(--ink-1); letter-spacing: -0.01em; }
+.sop-dlg-sub { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+.sop-dlg-x { margin-left: auto; border: 0; background: var(--bg-pill-muted); color: var(--ink-3); border-radius: 8px; padding: 6px; cursor: pointer; display: inline-flex; }
+.sop-dlg-x:hover { background: var(--accent-softer); color: var(--accent-deep); }
+
+.sop-ed { display: grid; grid-template-columns: minmax(0, 1fr) 272px; align-items: start; flex: 1; min-height: 0; overflow-y: auto; }
+.sop-ed-main { padding: 16px 16px 18px; display: flex; flex-direction: column; gap: 13px; min-width: 0; }
+.sop-ed-row { display: grid; grid-template-columns: minmax(0, 1fr) 190px; gap: 11px; }
+.sop-ed-who select { cursor: pointer; }
+
+.sop-field { display: block; min-width: 0; }
+.sop-field-l {
+  display: block; font-size: 10.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-3); margin-bottom: 6px;
+}
+.sop-field-opt { float: right; font-style: normal; font-weight: 700; color: var(--ink-4); text-transform: none; letter-spacing: 0; }
+.sop-field-in {
+  width: 100%; border: 1px solid var(--line-2); border-radius: var(--r-md); background: #fff;
+  padding: 8px 10px; font-family: inherit; font-size: 13px; color: var(--ink-1);
+}
+.sop-field-in:focus { outline: none; border-color: var(--accent-soft); box-shadow: 0 0 0 3px var(--accent-softer); }
+.sop-field-in.mono { font-family: var(--font-mono); }
+.sop-ta { min-height: 124px; resize: vertical; line-height: 1.6; font-size: 12.5px; }
+
+.sop-ins { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; row-gap: 5px; margin-bottom: 7px; }
+.sop-ins-l { font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-4); margin-right: 2px; }
+.sop-ins-b {
+  display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line-2); background: #fff;
+  color: var(--ink-2); border-radius: 999px; padding: 3px 9px 4px; font-family: inherit; font-size: 11px; font-weight: 700; cursor: pointer;
+}
+.sop-ins-b:hover { border-color: var(--accent-soft); background: var(--accent-softer); color: var(--accent-deep); }
+.sop-ins-b .ph-k { background: var(--accent-softer); }
+
+.sop-prev {
+  white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line-2); border-radius: var(--r-md);
+  background: var(--bg-card-hover); padding: 11px 13px; font-size: 13px; line-height: 1.75; color: var(--ink-1);
+}
+.sop-prev.empty { color: var(--ink-4); font-style: italic; }
+
+.sop-ed-help { border-left: 1px solid var(--line-1); background: var(--bg-rail); align-self: stretch; padding: 14px 14px 18px; }
+.sop-help-h {
+  display: flex; align-items: center; gap: 7px; width: 100%; border: 0; background: transparent; padding: 0 0 10px;
+  font-family: inherit; font-size: 11.5px; font-weight: 800; color: var(--ink-1); cursor: pointer;
+}
+.sop-help-h svg:first-child { color: var(--accent); }
+.sop-help-h svg:last-child { margin-left: auto; color: var(--ink-4); }
+.sop-help-b { display: flex; flex-direction: column; gap: 6px; }
+.sop-help-p { font-size: 11px; line-height: 1.55; color: var(--ink-3); text-wrap: pretty; }
+.sop-help-p code { font-family: var(--font-mono); background: #fff; border: 1px solid var(--line-2); border-radius: 4px; padding: 0 3px; }
+.sop-help-foot { border-top: 1px dashed var(--line-2); padding-top: 9px; margin-top: 3px; }
+.sop-help-row {
+  display: block; width: 100%; text-align: left; border: 1px solid var(--line-2); background: #fff;
+  border-radius: 9px; padding: 8px 10px; cursor: pointer; font-family: inherit;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.sop-help-row:hover { border-color: var(--accent-soft); box-shadow: 0 0 0 3px var(--accent-softer); }
+.sop-help-t { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 800; color: var(--ink-1); }
+.sop-help-c { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--accent-deep); margin: 5px 0 4px; overflow-wrap: anywhere; }
+.sop-help-n { display: block; font-size: 10px; line-height: 1.45; color: var(--ink-3); }
+
+.sop-dlg-foot { display: flex; align-items: center; gap: 9px; padding: 12px 16px; border-top: 1px solid var(--line-1); background: var(--bg-card-hover); }
+.sop-ed-count { flex: 1; min-width: 0; font-size: 10.5px; font-weight: 700; color: var(--ink-4); text-align: left; }
+.sop-btn {
+  display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-2); background: #fff;
+  color: var(--ink-2); border-radius: var(--r-md); padding: 7px 13px; font-family: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.sop-btn:hover { border-color: var(--line-strong); color: var(--ink-1); }
+.sop-btn--primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+.sop-btn--primary:hover { border-color: var(--accent-deep); background: var(--accent-deep); }
+.sop-btn--primary:disabled { border-color: var(--accent-soft); background: var(--accent-soft); cursor: not-allowed; }
+.sop-kb { font-family: var(--font-mono); font-size: 10px; opacity: 0.6; }
+
+/* Narrow single-field variant (SaveTodoModal). No left-hand status text in its
+   foot, so the buttons need to be pushed right themselves. */
+.sop-dlg--sm { width: min(420px, 100%); }
+.sop-dlg--sm .sop-dlg-foot { justify-content: flex-end; }
+
+@media (max-width: 862px) {
+  .sop-ed { grid-template-columns: minmax(0, 1fr); }
+  .sop-ed-help { border-left: 0; border-top: 1px solid var(--line-1); }
+}
+
+/* ═══════════════════════ LABELLED TO-DO RAIL ═══════════════════════════════
+   Ported from todo-labels-mock.html. Structure and every load-bearing value
+   are the mock's; the comments say which values are load-bearing and why. */
+
+/* The eight palette tokens. `fg` is the ink and the outline; `bg` is the fill
+   a STATE chip takes. Mirrors PALETTE in api/endpoints/deskLabels.ts and in
+   clawmeets/models/desk_label.py — the order there is the tie-break in
+   nextColor(); the values here are only how each token looks. */
+:root {
+  --lb-blue-fg: #2b4f9e;   --lb-blue-bg: #e8eefb;
+  --lb-green-fg: #1c6b46;  --lb-green-bg: #dcefe4;
+  --lb-indigo-fg: #3a45a0; --lb-indigo-bg: #e7e9fb;
+  --lb-teal-fg: #0b6b60;   --lb-teal-bg: #d9efec;
+  --lb-amber-fg: #7f530e;  --lb-amber-bg: #fbeed6;
+  --lb-pink-fg: #97306a;   --lb-pink-bg: #fadfee;
+  --lb-slate-fg: #4b4b57;  --lb-slate-bg: #e9e9ee;
+  --lb-plum-fg: #6b2aa0;   --lb-plum-bg: #f1e6fa;
+}
+
+/* ── the chip ───────────────────────────────────────────────────────────────
+   Two shapes, one per axis, so the axes are distinguishable WITHOUT colour:
+   one kind, one treatment: an outline pill with a leading "@". The sigil is the
+   key you press to reach labels in the capture box, so the chip teaches the
+   keystroke. Colour is a second, redundant channel — never the only one. */
+.lb {
+  display: inline-flex; align-items: center; gap: 3px; flex: none; max-width: 100%;
+  font-size: 9.5px; font-weight: 800; line-height: 1; letter-spacing: 0.01em;
+  border-radius: 999px; padding: 3px 7px 4px; border: 1px solid transparent;
+  cursor: pointer; font-family: inherit; transition: filter var(--t-fast);
+}
+button.lb:hover { filter: brightness(0.94); }
+span.lb { cursor: default; }
+.lb-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb.ctx { background: #fff; }
+.lb.ctx .lb-at { opacity: 0.55; font-weight: 800; }
+/* `.lb.st` — the FILLED `!` pill — retired with the state label axis. The
+   derived ticket state is `.tk` below, deliberately NOT a `.lb` variant. */
+.lb.lg { font-size: 11px; padding: 4px 10px 5px; gap: 4px; }
+.lb.sel { box-shadow: 0 0 0 2px var(--accent); }
+/* pinned = this chip is why the row matched the active filter */
+.lb.pin { box-shadow: 0 0 0 1.5px var(--accent); }
+.lb.has-x { padding-right: 4px; }
+.lb-x {
+  border: 0; background: transparent; color: currentColor; opacity: 0.5; cursor: pointer;
+  padding: 0 1px; line-height: 1; display: inline-flex;
+}
+.lb-x:hover { opacity: 1; }
+
+/* UNREGISTERED — a slug an agent or a voice edit wrote that is not in the
+   owner's registry. Accepted on the wire, but it has to READ as unregistered,
+   and the carrying channel is the BORDER STYLE, not a grey fill: `slate` is a
+   real palette token, so a grey chip would be indistinguishable from a label
+   the owner deliberately coloured grey. Three redundant channels, none of them
+   hue. ink-3 (#7a6e8c) on #fff is 4.73:1 — it passes as text, not merely as
+   decoration. */
+.lb.unreg { background: #fff; border: 1px dashed var(--ink-3); color: var(--ink-3); }
+.lb.unreg .lb-at { opacity: 0.6; font-weight: 800; }
+.lb.unreg .lb-add { font-weight: 900; opacity: 0.5; margin-left: 1px; }
+button.lb.unreg:hover {
+  filter: none; border-style: solid; border-color: var(--accent);
+  color: var(--accent-deep); background: var(--accent-softer);
+}
+.lb.unreg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* LABEL LIST UNAVAILABLE — a plain, solid, neutral pill. Explicitly NOT the
+   dashed unregistered treatment and explicitly not grey-as-a-palette-colour:
+   it carries the word the owner wrote and makes no claim about kind,
+   membership or colour, because the client can read none of the three. No `+`,
+   no sigil, no hover affordance — there is nothing here to act on until the
+   list loads. Reads as "labels are unavailable" (true) rather than "your
+   labels don't exist" (a lie). */
+.lb.unk {
+  background: var(--bg-pill-muted); border: 1px solid var(--line-2);
+  color: var(--ink-2); cursor: default;
+}
+.lb.unk .lb-t { font-weight: 800; }
+button.lb.unk:hover { background: var(--bg-pill-muted); border-color: var(--line-2); filter: none; }
+
+/* A span with role=button (the row is already a <button>), so the centring and
+   the focus ring a <button> gave for free have to be written down. */
+.lb-more {
+  flex: none; display: inline-flex; align-items: center;
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 800; color: var(--ink-3);
+  background: var(--bg-pill-muted); border: 0; border-radius: 999px; padding: 3px 6px 4px; cursor: pointer;
+}
+.lb-more:hover { background: var(--accent-softer); color: var(--accent-deep); }
+.lb-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ── THE TICKET CHIP ────────────────────────────────────────────────────────
+   The server-derived state, and a SIBLING of `.lb` rather than a variant of it.
+   It shares the pill geometry because the row's rhythm demands it, and shares
+   nothing else: no palette token (colour is how the owner recognises labels
+   THEY minted), no sigil (a sigil is a claim about the label axis), no dashed
+   "not in your list" arm, no hover affordance — there is nothing to press.
+
+   Three classes, not four. `new` renders NO ELEMENT AT ALL, so there is no
+   `.tk-new` and there must never be one: a blank row is a New row. */
+.tk {
+  display: inline-flex; align-items: center; gap: 3px; flex: none; max-width: 100%;
+  font-size: 9.5px; font-weight: 800; line-height: 1; letter-spacing: 0.01em;
+  border-radius: 999px; padding: 3px 7px 4px; border: 1px solid transparent;
+  font-family: inherit; cursor: default; white-space: nowrap;
+}
+/* Working carries a spinner glyph as a SECOND channel beside the word: on an
+   archived row it is the only thing saying the work is still running, and it is
+   the fact the drawer used to hide. Not animated — the row is a list item, not
+   a progress indicator, and thirty spinning marks on one plate is noise. */
+.tk-working { background: var(--prio-normal-bg); color: var(--accent-deep); }
+.tk-working > svg { flex: none; opacity: 0.8; }
+/* Failed borrows the URGENT palette — the one already spent on "this needs a
+   hand now" by the off-contract card rule — rather than
+   minting a colour. It pairs a TriangleAlert with the word for the same reason
+   Working pairs a Loader: the colour alone is a claim a colour-blind reader
+   cannot check. --prio-urgent-fg on --prio-urgent-bg is 6.07:1 — above AA for
+   this chip's 9.5px text. */
+.tk-failed { background: var(--prio-urgent-bg); color: var(--prio-urgent-fg); }
+.tk-failed > svg { flex: none; opacity: 0.85; }
+.tk-completed { background: var(--prio-quick-bg); color: var(--prio-quick-fg); }
+/* In the active-filter bar the chip carries an ✕, same as a label chip. */
+.tk.has-x { padding-right: 4px; }
+
+/* The label row on an item — its own wrap line, under the text and ABOVE the
+   provenance/due meta. One line, never wraps, until +N is expanded. The TICKET
+   chip is the first child of this line when there is one; it is not a `.lb` and
+   never enters the `+N` arithmetic. */
+.todo-labels {
+  display: flex; align-items: center; gap: 4px; margin-top: 6px; min-width: 0;
+  overflow: hidden; flex-wrap: nowrap;
+}
+.todo-labels.expanded { flex-wrap: wrap; overflow: visible; }
+/* `min-width: 0` alone was never enough. `.lb` carries `flex: none`, which
+   pins flex-shrink to 0 — so on a `nowrap` line under `overflow: hidden` the
+   chips keep their full width, `.lb-more` is last, and the `+N` is what gets
+   pushed out: two ordinary names (`@quarterly-planning !waiting-on-legal`)
+   are enough to clip it to 9.5px and then to nothing, and a row carrying five
+   labels presents as carrying two. It also meant `.lb-t`'s `text-overflow:
+   ellipsis` could NEVER fire — two rules contradicting each other since the
+   mock, with the ellipsis one losing silently. `flex: 0 1 auto` lets the names
+   give first and ellipsise; `.lb-more` keeps `flex: none` deliberately, so the
+   count is the LAST thing to yield rather than the first. */
+.todo-labels .lb:not(.lb-more) { min-width: 0; flex: 0 1 auto; }
+/* The ticket chip keeps `flex: none` — it is one of three fixed words, it never
+   needs to ellipsise, and it must be the LAST thing to yield rather than the
+   first, for the same reason `.lb-more` does. */
+.todo-labels .tk { flex: none; }
+
+/* ── control strip: the one new structural row in the rail. Sits BELOW the
+      capture box, so the tab pair and the capture input are untouched. */
+/* LOAD-BEARING, and it looks like nothing. The group and filter popovers are
+   `position: absolute` with `top: 44` — 7px + a 23px button + 7px of strip,
+   plus the same 6px gap the row popover uses — and that number is measured
+   from THIS wrapper. Without the rule they resolve against `.todo` instead
+   and open 27px ABOVE the button that opened them, over the capture box. */
+.todo-ctl-wrap { position: relative; }
+.todo-ctl {
+  flex: none; display: flex; align-items: center; gap: 6px; padding: 7px 12px;
+  border-bottom: 1px solid var(--line-1); background: var(--bg-rail);
+  transition: background var(--t-fast), box-shadow var(--t-fast);
+}
+.todo-ctl.filtered { background: var(--accent-softer); box-shadow: inset 3px 0 0 0 var(--accent); }
+.ctl-btn {
+  display: inline-flex; align-items: center; gap: 4px; font-family: inherit; font-size: 10.5px;
+  font-weight: 800; border: 1px solid var(--line-2); background: #fff; color: var(--ink-2);
+  border-radius: 7px; padding: 4px 7px 4px 8px; cursor: pointer;
+  transition: all var(--t-fast); white-space: nowrap;
+}
+.ctl-btn:hover { border-color: var(--accent-soft); color: var(--accent-deep); }
+.ctl-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ctl-btn.on svg { color: #fff; }
+.ctl-btn svg { color: var(--ink-4); flex: none; }
+.ctl-n { font-family: var(--font-mono); font-size: 9.5px; font-weight: 800; }
+.ctl-sp { flex: 1; }
+.ctl-clear {
+  display: inline-flex; align-items: center; gap: 3px; font-family: inherit; font-size: 10px;
+  font-weight: 800; border: 0; background: transparent; color: var(--accent-deep);
+  cursor: pointer; padding: 4px 5px; border-radius: 6px;
+}
+.ctl-clear:hover { background: #fff; }
+
+/* active-filter predicate line — the second cue that a filter is on */
+.todo-fbar {
+  flex: none; display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  padding: 0 12px 8px; background: var(--accent-softer);
+  box-shadow: inset 3px 0 0 0 var(--accent); border-bottom: 1px solid var(--accent-soft);
+}
+.fbar-op {
+  font-family: var(--font-mono); font-size: 9px; font-weight: 800; color: var(--accent-deep);
+  opacity: 0.7; letter-spacing: 0.04em;
+}
+.fbar-why {
+  padding: 0 12px 8px; background: var(--accent-softer);
+  box-shadow: inset 3px 0 0 0 var(--accent); border-bottom: 1px solid var(--accent-soft);
+  font-size: 9.5px; line-height: 1.5; font-weight: 600; color: var(--ink-3);
+}
+
+/* ── group headers ── */
+.grp { margin: 14px 0 2px; }
+.grp:first-child { margin-top: 4px; }
+/* position:sticky is LOAD-BEARING at eight groups: the group you are reading
+   keeps its header pinned, so you never lose your place mid-scroll. Measured
+   at eight groups: exactly ONE header is pinned at any moment (they hand off
+   rather than stack), a flat 22px of viewport at any group count.
+   `top: -8px` cancels `.todo-scroll`'s 8px padding-top — the sticky offset
+   resolves against the padding box — so the pinned header rests flush at the
+   scrollport edge with nothing clipped. Change that padding, change this. */
+.grp-h {
+  display: flex; align-items: center; gap: 7px; width: 100%; border: 0;
+  cursor: pointer; font-family: inherit; padding: 4px 4px 5px; text-align: left;
+  position: sticky; top: -8px; background: var(--bg-rail); z-index: 1;
+}
+.grp-h:hover .grp-n { color: var(--ink-2); }
+.grp-n { font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.grp-c { font-family: var(--font-mono); font-size: 10px; font-weight: 800; color: var(--ink-4); }
+.grp-line { flex: 1; height: 1px; background: var(--line-1); }
+.grp-h svg { color: var(--ink-4); flex: none; }
+.grp.resid .grp-n { color: var(--ink-4); }
+.grp.unreg .grp-n { color: var(--ink-3); }
+.grp-unreg {
+  display: flex; align-items: center; gap: 7px; margin: -2px 4px 5px 24px;
+  font-size: 10px; font-weight: 700; color: var(--ink-4);
+}
+.grp-unreg button {
+  border: 1px dashed var(--ink-3); background: #fff; color: var(--ink-2); font-family: inherit;
+  font-size: 9.5px; font-weight: 800; border-radius: 999px; padding: 2px 8px 3px; cursor: pointer;
+}
+.grp-unreg button:hover {
+  border-style: solid; border-color: var(--accent); color: var(--accent-deep); background: var(--accent-softer);
+}
+.grp-empty { font-size: 10.5px; color: var(--ink-4); padding: 2px 8px 6px; font-style: italic; }
+/* `.grp.inbox` — the red "Unprocessed · no state" pile — is gone with the
+   axis that produced it. New IS the inbox now, and it is an ordinary group with
+   nothing to nag about, so `.grp.ticket` deliberately carries no override. */
+
+/* grouped view swaps the grip for a static, honest note */
+.grp-note {
+  display: flex; align-items: flex-start; gap: 6px; margin: 2px 2px 6px; padding: 7px 9px;
+  background: #fff; border: 1px dashed var(--line-2); border-radius: 8px;
+  font-size: 10px; line-height: 1.45; color: var(--ink-3);
+}
+.grp-note svg { color: var(--ink-4); flex: none; margin-top: 1px; }
+.grp-note b { color: var(--ink-2); font-weight: 800; }
+
+/* a row currently rendered in more than one group */
+.todo-item.dup .todo-dup {
+  position: absolute; left: -2px; top: 9px; width: 3px; height: 16px; border-radius: 2px;
+  background: var(--accent-soft);
+}
+
+/* ONE line of chrome in place of N empty headers. A header is ~36px and a
+   rendered-but-empty group ~60px, against a ~575px grouped list area — at
+   eight states that is half the viewport gone before a task renders. */
+.grp-empties {
+  display: block; width: 100%; margin: 12px 0 2px; padding: 5px 6px; border: 0;
+  background: transparent; border-top: 1px dashed var(--line-2);
+  font-family: inherit; font-size: 10px; font-weight: 800; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ink-4); cursor: pointer; text-align: left;
+}
+.grp-empties:hover { color: var(--accent-deep); }
+
+/* "hidden by filter" notice — what a DESK_TODO_SYNC arrival does under a filter */
+.hid-note {
+  display: flex; align-items: center; gap: 6px; margin: 4px 2px 8px; padding: 7px 9px;
+  background: #fff; border: 1px solid var(--accent-soft); border-radius: 8px;
+  font-size: 10.5px; font-weight: 700; color: var(--ink-2); box-shadow: var(--shadow-1);
+}
+.hid-note svg { flex: none; }
+.hid-note button {
+  margin-left: auto; border: 0; background: transparent; color: var(--accent-deep);
+  font-family: inherit; font-size: 10px; font-weight: 800; cursor: pointer;
+}
+.hid-note.quiet { border-color: var(--line-2); font-weight: 600; color: var(--ink-3); }
+
+/* Registry-unavailable bar. Deliberately NOT red: a lost label list is a
+   cosmetic failure and the copy's whole job is to say so, because the
+   alternative reading — "my plate is broken" — is the one that costs the owner
+   ten minutes of panic. */
+.deg-note {
+  display: flex; gap: 6px; margin: 4px 2px 8px; padding: 8px 9px;
+  background: var(--bg-pill-muted); border: 1px dashed var(--ink-3); border-radius: 8px;
+  font-size: 10.5px; line-height: 1.5; font-weight: 600; color: var(--ink-2);
+}
+.deg-note svg { color: var(--ink-3); flex: none; margin-top: 1px; }
+.deg-note b { font-weight: 800; }
+.deg-note button {
+  display: block; margin-top: 4px; border: 0; background: transparent; color: var(--accent-deep);
+  padding: 0; font-family: inherit; font-size: 10px; font-weight: 800; cursor: pointer; text-decoration: underline;
+}
+
+/* ── popovers ── */
+.pop {
+  position: absolute; z-index: 40; width: 250px; background: #fff; border: 1px solid var(--line-2);
+  border-radius: 12px; box-shadow: var(--shadow-pop); padding: 10px;
+  /* `70%` OF THE CONTAINING BLOCK — which is `.todo`, the full-height rail,
+     for exactly one of the two `.pop` mount sites. The other anchors in a
+     short wrapper and needs the absolute px override below; a percentage is
+     only ever right here, so read this rule and the one beneath it as one unit
+     before adding a third mount site. */
+  max-height: 70%; overflow-y: auto;
+}
+/* MOUNT SITE 2 — the Group and Filter popovers. `.todo-ctl-wrap` had no rule
+   at all until it was given `position: relative` to anchor them; that fixed
+   where they OPEN and moved the percentage's basis to the 37px strip in the
+   same stroke, leaving a 47.9px sliver over 294px of content — none of six
+   rows visible. A percentage max-height DOES resolve against an auto-height
+   containing block for an absolutely positioned child (CSS 2.1's "treat as
+   none" escape hatch excludes them), which is why it degrades rather than
+   falling back to none. 420px
+   is what these had against `.todo` at a 602px scrollport, so it restores the
+   budget rather than inventing one. */
+.todo-ctl-wrap .pop { max-height: 420px; }
+.pop-h {
+  display: flex; align-items: center; gap: 6px; font-size: 9.5px; font-weight: 800;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-4); margin: 2px 2px 7px;
+}
+.pop-h .sp { flex: 1; }
+.pop-x { border: 0; background: transparent; color: var(--ink-4); cursor: pointer; padding: 2px; display: inline-flex; border-radius: 5px; }
+.pop-x:hover { background: var(--bg-pill-muted); color: var(--ink-2); }
+.pop-sec {
+  font-size: 9px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-4); margin: 9px 2px 5px;
+}
+.pop-sec:first-of-type { margin-top: 2px; }
+.pop-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent;
+  font-family: inherit; font-size: 12px; font-weight: 700; color: var(--ink-2);
+  padding: 6px 7px; border-radius: 7px; cursor: pointer; text-align: left;
+}
+.pop-row:hover { background: var(--bg-pill-muted); }
+.pop-row.on { background: var(--accent-softer); color: var(--accent-deep); }
+.pop-row .bx {
+  width: 14px; height: 14px; flex: none; border: 1.5px solid var(--line-strong); border-radius: 4px;
+  display: inline-flex; align-items: center; justify-content: center; color: #fff; background: #fff;
+}
+.pop-row .bx.rd { border-radius: 999px; }
+.pop-row.on .bx { background: var(--accent); border-color: var(--accent); }
+.pop-row .ct { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; color: var(--ink-4); }
+.pop-row.on .ct { color: var(--accent-deep); }
+/* R19 — a control you cannot use is DISABLED WITH ITS REASON, not hidden.
+   Hiding makes the rail look like it never had the feature, and it collapses
+   two conditions needing different reactions into one identical absence. */
+/* `[aria-disabled]` alongside `:disabled` — the cap's blocked rows stay
+   focusable so the refusal has something to attach to, and they must still
+   LOOK refused. */
+.pop-row.off, .pop-row:disabled, .pop-row[aria-disabled='true'] { color: var(--ink-4); cursor: default; background: transparent; }
+.pop-row.off .bx, .pop-row:disabled .bx, .pop-row[aria-disabled='true'] .bx { border-color: var(--line-2); background: var(--bg-pill-muted); }
+.pop-row:disabled:hover, .pop-row[aria-disabled='true']:hover { background: transparent; }
+/* ink-3, not ink-4: this renders `unknownAxisReason()` — the sentence saying
+   WHY the row above it is refused — and at 9.5px on white ink-4 is 2.62:1,
+   under half of AA. ink-3 is 4.73:1 and is what the sheet's own explanatory
+   copy already uses. A refusal nobody can read is the same failure as a
+   refusal that says nothing. */
+.pop-why { font-size: 9.5px; line-height: 1.5; color: var(--ink-3); padding: 0 8px 6px 30px; }
+.pop-sub {
+  font-size: 9px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-4); margin: 7px 2px 4px 24px;
+}
+.pop-row.unregrow { display: flex; align-items: center; gap: 8px; }
+.pop-row.unregrow .unreg-nm {
+  font-weight: 800; color: var(--ink-3); border-bottom: 1px dashed var(--ink-4); padding-bottom: 1px;
+}
+.mini-add {
+  margin-left: auto; border: 1px dashed var(--ink-3); background: #fff; color: var(--ink-2);
+  font-family: inherit; font-size: 9px; font-weight: 800; border-radius: 999px;
+  padding: 2px 7px 3px; cursor: pointer; flex: none;
+}
+.mini-add:hover { border-style: solid; border-color: var(--accent); color: var(--accent-deep); background: var(--accent-softer); }
+.mini-x {
+  border: 1px solid var(--line-2); background: #fff; color: var(--ink-4); border-radius: 999px;
+  padding: 3px; display: inline-flex; cursor: pointer; flex: none;
+}
+.mini-x:hover { border-color: var(--prio-urgent-fg); color: var(--prio-urgent-fg); }
+.pop-div { height: 1px; background: var(--line-1); margin: 8px 0; }
+.pop-tog {
+  display: flex; align-items: center; gap: 7px; padding: 6px 7px; border-radius: 7px; cursor: pointer;
+  font-size: 10.5px; font-weight: 700; color: var(--ink-3); width: 100%; border: 0;
+  background: transparent; font-family: inherit; text-align: left;
+}
+.pop-tog:hover { background: var(--bg-pill-muted); }
+.pop-tog .sw {
+  width: 26px; height: 15px; border-radius: 999px; background: var(--line-strong); position: relative;
+  flex: none; transition: background var(--t-fast);
+}
+.pop-tog .sw i {
+  position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 999px;
+  background: #fff; transition: left var(--t-fast);
+}
+.pop-tog.on .sw { background: var(--accent); }
+.pop-tog.on .sw i { left: 13px; }
+.pop-tog .hint { margin-left: auto; font-family: var(--font-mono); font-size: 9px; color: var(--ink-4); }
+.pop-mini {
+  width: 100%; border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 8px;
+  font-family: inherit; font-size: 11.5px; font-weight: 600; color: var(--ink-1); outline: 0;
+}
+.pop-mini:focus { border-color: var(--accent-soft); box-shadow: 0 0 0 3px var(--accent-softer); }
+.pop-mini:disabled { background: var(--bg-pill-muted); color: var(--ink-4); cursor: not-allowed; }
+.pop-foot {
+  display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: transparent;
+  font-family: inherit; font-size: 10.5px; font-weight: 800; color: var(--accent-deep);
+  padding: 6px 7px; border-radius: 7px; cursor: pointer;
+}
+.pop-foot:hover { background: var(--accent-softer); }
+/* the cap notice — the one behaviour with no mock check behind it */
+.pop-cap {
+  font-size: 10px; line-height: 1.5; font-weight: 700; color: var(--prio-urgent-fg);
+  margin: 4px 2px 2px; padding: 5px 7px; background: var(--prio-urgent-bg); border-radius: 6px;
+}
+/* Same box, neutral. The cap is the owner's own doing and urgent red is the
+   right register for it; an unreadable registry is not, and it is a state that
+   usually clears on its own — colouring it as an emergency is what makes a
+   transient blip read as permanent. But ink-2 (9.33:1 here), not ink-3
+   (4.10:1) — the same token `.deg-note` already uses on this background. The
+   neutral register is carried by hue, background and weight; none of the three
+   needs the text to be faint, and a notice under AA is not calm, it is quiet
+   in the way that means unread. */
+.pop-cap.calm { color: var(--ink-2); background: var(--bg-pill-muted); font-weight: 600; }
+.pop-err {
+  font-size: 10px; line-height: 1.5; font-weight: 700; color: var(--prio-urgent-fg);
+  margin: 6px 2px 2px; padding: 5px 7px; background: var(--prio-urgent-bg); border-radius: 6px;
+}
+
+/* capture-time autocomplete */
+.ac {
+  position: absolute; left: 14px; right: 14px; z-index: 50; background: #fff;
+  border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow-pop); padding: 6px;
+}
+.ac-sec { font-size: 9px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-4); margin: 4px; }
+.ac-row {
+  display: flex; align-items: center; gap: 7px; width: 100%; border: 0; background: transparent;
+  font-family: inherit; font-size: 12px; font-weight: 700; color: var(--ink-2);
+  padding: 5px 6px; border-radius: 6px; cursor: pointer; text-align: left;
+}
+.ac-row.cur { background: var(--accent-softer); color: var(--accent-deep); }
+.ac-row .k { margin-left: auto; font-family: var(--font-mono); font-size: 9px; color: var(--ink-4); }
+.ac-new { color: var(--accent-deep); }
+.ac-note {
+  padding: 7px 9px; margin: 3px 2px 2px; border: 1px dashed var(--line-2); border-radius: 7px;
+  font-size: 10.5px; line-height: 1.55; color: var(--ink-3); background: var(--bg-rail);
+}
+.ac-note b { color: var(--ink-2); font-weight: 800; }
+.ac-note-q { color: var(--ink-3); font-weight: 600; }
+.ac-note .kbd {
+  font-family: var(--font-mono); font-weight: 800; background: var(--bg-pill-muted);
+  border: 1px solid var(--line-2); border-radius: 4px; padding: 0 4px;
+}
+
+/* pending chips under the capture box — a GHOST LINE, not tokens in place: the
+   input is ~220px inside a ~260px rail and in-place tokens at that width make
+   the caret behaviour fiddly. */
+.cap-chips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 6px 14px 0; }
+.todo-adding { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-3); padding: 4px 14px 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.todo-adding span { overflow: hidden; text-overflow: ellipsis; }
+.cap-cap { font-size: 9.5px; font-weight: 700; color: var(--prio-urgent-fg); padding: 4px 14px 0; }
+
+/* ── manage-labels sheet ── */
+.sheet { position: absolute; inset: 0; z-index: 60; background: rgba(31, 24, 38, 0.28); display: flex; align-items: stretch; }
+.sheet-c {
+  margin: auto 0 0; width: 100%; max-height: 88%; background: #fff; border-radius: 14px 14px 0 0;
+  box-shadow: var(--shadow-pop); display: flex; flex-direction: column; overflow: hidden;
+}
+.sheet-h {
+  display: flex; align-items: center; gap: 6px; padding: 12px 13px 9px; border-bottom: 1px solid var(--line-1);
+  font-size: 12.5px; font-weight: 800; color: var(--ink-1);
+}
+.sheet-b { overflow-y: auto; padding: 8px 10px 14px; }
+.mg { display: flex; align-items: center; gap: 6px; padding: 6px 4px; border-bottom: 1px solid var(--line-1); }
+.mg:last-child { border-bottom: 0; }
+.mg.drag-over { box-shadow: inset 0 -2px 0 0 var(--accent); }
+.mg.dragging { opacity: 0.5; }
+.mg-sw { width: 13px; height: 13px; border-radius: 4px; flex: none; cursor: pointer; border: 1px solid rgba(0, 0, 0, 0.08); }
+.mg-sw.unreg { background: #fff; border: 1px dashed var(--ink-3); cursor: default; }
+.mg-ro { flex: 1; min-width: 0; padding: 4px 6px; font-size: 11.5px; font-weight: 800; color: var(--ink-3); }
+.mg-in {
+  flex: 1; min-width: 0; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px;
+  font-family: inherit; font-size: 11.5px; font-weight: 700; color: var(--ink-1); background: transparent; outline: 0;
+}
+.mg-in:hover { border-color: var(--line-2); }
+.mg-in:focus { border-color: var(--accent-soft); box-shadow: 0 0 0 3px var(--accent-softer); background: #fff; }
+.mg-n { font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; color: var(--ink-4); flex: none; }
+.mg-a { border: 0; background: transparent; color: var(--ink-4); border-radius: 6px; padding: 4px; cursor: pointer; display: inline-flex; flex: none; }
+.mg-a:hover { background: var(--bg-pill-muted); color: var(--accent-deep); }
+.mg-a.dz:hover { background: var(--prio-urgent-bg); color: var(--prio-urgent-fg); }
+.mg-a.add { font-family: var(--font-mono); font-size: 12px; font-weight: 800; width: 22px; justify-content: center; }
+.mg-a.add:hover { background: var(--accent-softer); color: var(--accent-deep); }
+.mg-drag {
+  color: var(--line-strong); cursor: grab; display: inline-flex; flex: none;
+  border: 0; background: transparent; padding: 2px; border-radius: 5px;
+}
+.mg-drag:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; color: var(--accent); }
+.mg-warn {
+  margin: 8px 4px 0; padding: 9px 10px; background: var(--prio-urgent-bg); border-radius: 8px;
+  font-size: 10.5px; line-height: 1.5; color: var(--prio-urgent-fg); font-weight: 700;
+}
+.mg-warn .btns { display: flex; gap: 6px; margin-top: 8px; }
+.mg-warn button {
+  font-family: inherit; font-size: 10px; font-weight: 800; border-radius: 6px; padding: 5px 9px;
+  cursor: pointer; border: 1px solid var(--prio-urgent-fg); background: transparent; color: var(--prio-urgent-fg);
+}
+.mg-warn button.pri { background: var(--prio-urgent-fg); color: #fff; }
+.mg-warn select {
+  font-family: inherit; font-size: 10.5px; font-weight: 700; border-radius: 6px; padding: 4px 6px;
+  border: 1px solid var(--prio-urgent-fg); background: #fff; color: var(--prio-urgent-fg); margin-top: 6px; width: 100%;
+}
+.mg-warn-x { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(0, 0, 0, 0.08); font-weight: 600; line-height: 1.5; }
+.mg-add {
+  display: flex; align-items: center; gap: 5px; width: 100%; margin: 6px 0 2px; padding: 6px;
+  border: 1px dashed var(--line-2); border-radius: 7px; background: transparent;
+  font-family: inherit; font-size: 10.5px; font-weight: 800; color: var(--ink-3); cursor: pointer;
+}
+.mg-add:hover { border-color: var(--accent-soft); color: var(--accent-deep); background: var(--accent-softer); }
+.mg-form { margin: 6px 0 2px; padding: 9px; border: 1px solid var(--accent-soft); border-radius: 8px; background: var(--accent-softer); }
+.mg-fin {
+  width: 100%; font-family: inherit; font-size: 11.5px; font-weight: 700; color: var(--ink-1);
+  border: 1px solid var(--line-2); border-radius: 6px; padding: 6px 8px; background: #fff;
+}
+.mg-fin:focus { outline: 0; border-color: var(--accent-soft); box-shadow: 0 0 0 3px var(--accent-softer); }
+.mg-fnote { font-size: 10px; line-height: 1.5; color: var(--ink-3); margin-top: 6px; }
+.mg-fnote b { color: var(--ink-2); font-weight: 800; }
+.mg-fnote-fix { color: var(--ink-4); }
+.mg-ferr {
+  font-size: 10px; line-height: 1.5; font-weight: 700; color: var(--prio-urgent-fg);
+  margin-top: 6px; padding: 5px 7px; background: var(--prio-urgent-bg); border-radius: 6px;
+}
+.mg-form .btns { display: flex; gap: 6px; margin-top: 9px; }
+.mg-form button {
+  font-family: inherit; font-size: 10.5px; font-weight: 800; border-radius: 6px; padding: 5px 10px;
+  border: 1px solid var(--line-2); background: #fff; color: var(--ink-2); cursor: pointer;
+}
+.mg-form button.pri { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mg-none {
+  padding: 10px 9px; margin-bottom: 8px; border: 1px dashed var(--line-2); border-radius: 8px;
+  font-size: 10.5px; line-height: 1.6; color: var(--ink-3);
+}
+/* Inline, not `display: block` like `.deg-note button` — the orphaned panel's
+   Try again sits mid-sentence, because the sentence is what makes it a repair
+   rather than a last resort. */
+.mg-none button {
+  border: 0; background: transparent; color: var(--accent-deep); padding: 0;
+  font-family: inherit; font-size: inherit; font-weight: 800; cursor: pointer; text-decoration: underline;
+}
+.mg-foot { font-size: 10.5px; line-height: 1.55; color: var(--ink-4); padding: 10px 4px 0; }
+.mg-foot b { color: var(--ink-3); font-weight: 800; }
+/* The section headers carry the CARDINALITY. With nothing locked there is
+   nothing else on screen explaining why two sections exist at all — "any
+   number per to-do" / "one per to-do" is the whole difference between the
+   axes, in six words, at the only place the owner meets both at once. */
+.sec-card { font-weight: 800; color: var(--accent-deep); text-transform: none; letter-spacing: 0; }
+
+/* Visually hidden but reachable by a screen reader. Tailwind ships a `sr-only`
+   utility, but this file is plain CSS loaded outside the utility layer and the
+   sheet's aria-live region needs it, so it is defined here rather than
+   depending on a class that may or may not be generated. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* Click-away catcher for the row label popover. Inside the rail rather than a
+   full-screen portal, so a click on the desk behind it still does its own
+   thing — closing a popover should not swallow the next click. */
+.pop-scrim { position: absolute; inset: 0; z-index: 39; }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   THE DESK CARD'S PHASE RAIL AND ITS THREE BANDS
+   Ported from the reference prototype (`sidebar-redesign-desk.css`). None of
+   these classes existed in this file before — the only `md-*` band class the
+   app shipped was `.md-prog` — and every token below is one already declared in
+   `styles/design/tokens.css`.
+
+   Two rules from the prototype are deliberately NOT ported:
+     `.md-stage--nospec`     — the "no PRD yet — spec it first" chip. It named a
+                               state a regular project cannot be in, and the
+                               reconciled hand-off deleted it. Re-adding it at a
+                               new address would re-create the same mistake.
+     `.md-fold { background: #fff }` — ported as `var(--bg-card)`. The desk is
+                               light-only today so this changes nothing now, but
+                               a literal white is the first thing that breaks if
+                               that ever stops being true.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* — the rail — */
+.md-stage { display: flex; align-items: center; gap: 7px; margin: 0 0 11px; flex-wrap: wrap; }
+.md-stage-s { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-4); }
+.md-stage-s i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
+.md-stage-s + .md-stage-s::before { content: ""; width: 13px; height: 1px; background: var(--line-2); margin-right: 2px; }
+.md-stage-s.is-done { color: var(--ink-3); }
+.md-stage-s.is-done i { background: var(--av-green); }
+.md-stage-s.is-now { color: var(--accent-deep); }
+.md-stage-s.is-now i { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-softer); }
+/* The "no report yet" affordance. It is why an absent REPORT band needs no
+   placeholder row: this already says it, one line up, for free. */
+.md-stage-s.is-next { opacity: .55; }
+.md-stage-s.is-next i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--line-strong); }
+.md-stage-s em { font-style: normal; text-transform: none; letter-spacing: 0; font-size: 10.5px; font-weight: 750; color: var(--accent-deep); background: var(--accent-softer); padding: 1px 8px; border-radius: 999px; margin-left: 2px; }
+/* Carrier 2 of 5 — set from `!!plan.deviation` and from nothing else. */
+.md-stage-s em.md-stage-warn { color: var(--prio-urgent-fg); background: var(--prio-urgent-bg); }
+/* The one-line rails — not yours, and failed. Muted grey, never red: nothing
+   missing is ever drawn in the deviation's colour. (A DM prints no rail at all,
+   so it needs no style here.) */
+.md-stage--direct { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-4); }
+.md-stage--direct svg { opacity: .7; }
+
+/* — an expanded band — */
+.md-cs { margin-bottom: 12px; padding-left: 10px; border-left: 2px solid var(--line-1); }
+.md-cs.attn { border-left-color: var(--accent); }
+.md-cs.warn { border-left-color: var(--prio-urgent-fg); }
+.md-cs--focus { padding: 10px 12px 11px; border-left-width: 3px; border-radius: 0 var(--r-sm) var(--r-sm) 0; background: linear-gradient(90deg, var(--bg-rail), rgba(255, 255, 255, 0) 78%); }
+.md-cs-h { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 7px; margin-bottom: 6px; }
+.md-cs-t { flex: 0 0 auto; font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-4); }
+.md-cs--focus .md-cs-t { font-size: 10.5px; color: var(--ink-2); }
+.md-cs--focus.attn .md-cs-t { color: var(--accent-deep); }
+.md-cs--focus.warn .md-cs-t { color: var(--prio-urgent-fg); }
+.md-cs-def { font-size: 10.5px; font-weight: 650; line-height: 1.45; color: var(--ink-4); margin: 0 0 8px; text-wrap: pretty; }
+.md-cs-tag { flex: 0 0 auto; font-size: 10px; font-weight: 800; color: #fff; background: var(--accent); padding: 2px 8px; border-radius: 999px; }
+.md-cs-tag--warn { background: var(--prio-urgent-fg); }
+.md-cs-ok { flex: none; display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 800; color: var(--prio-quick-fg); background: var(--prio-quick-bg); padding: 2px 7px; border-radius: 999px; }
+.md-cs-ok--neutral { color: var(--ink-3); background: var(--bg-pill-muted); }
+.md-cs-line { flex: 1 1 24px; min-width: 4px; height: 1px; background: var(--line-1); }
+.md-cs-rev { flex: none; font-size: 10px; font-weight: 700; color: var(--ink-4); font-family: var(--font-mono); }
+.md-cs-more { display: inline-flex; align-items: center; gap: 3px; flex: none; border: 0; background: transparent; font-family: inherit; color: var(--ink-3); padding: 2px 6px; border-radius: 999px; cursor: pointer; }
+.md-cs-more:hover { background: var(--bg-pill-muted); color: var(--accent-deep); }
+.md-cs .md-card-quote { border-left: 0; padding-left: 0; margin: 0; }
+/* The held line. NOT RED — red is reserved for a real deviation, and a run
+   waiting on an answer is not off-contract. The token is `--prio-quick-fg`, the
+   green that means "small thing, yours now", and the comment used to claim
+   amber, which the rule never drew. The colour is the part that is right and
+   the word was the part that was wrong: the only amber in the palette is
+   `--av-amber`, which is the AVATAR palette — decorative, non-text — and yields
+   2.82:1 on white, under AA for 11.5px/700 text. `--prio-quick-fg` clears
+   6.28:1. It is distinguishable from the `accepted` pill by form rather than by
+   hue: that one is a filled pill at 10px, this is a sentence. */
+.md-cs-held { font-size: 11.5px; font-weight: 700; color: var(--prio-quick-fg); margin: 0 0 8px; }
+.md-cs-primary { margin-top: 2px; }
+
+/* — a folded band — */
+.md-fold { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; margin-bottom: 9px; padding: 6px 10px 6px 9px; border: 1px solid var(--line-1); border-left: 2px solid var(--line-2); background: var(--bg-card); border-radius: 0 8px 8px 0; cursor: pointer; font-family: inherit; transition: background var(--t-fast), border-color var(--t-fast); }
+.md-fold:hover { background: var(--bg-card-hover); border-left-color: var(--line-strong); }
+.md-fold-t { flex: none; font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-4); }
+.md-fold-m { min-width: 0; flex: 0 1 auto; font-size: 11.5px; font-weight: 650; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.md-fold-line { flex: 1 1 6px; min-width: 0; height: 1px; background: var(--line-1); }
+.md-fold-cta { flex: none; display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 800; color: var(--ink-3); }
+.md-fold:hover .md-fold-cta { color: var(--accent-deep); }
+.md-fold--attn { border-color: var(--accent-softer); border-left-color: var(--accent); background: var(--accent-softer); }
+.md-fold--attn .md-fold-t, .md-fold--attn .md-fold-cta { color: var(--accent-deep); }
+.md-fold--warn { border-color: var(--prio-urgent-bg); border-left-color: var(--prio-urgent-fg); background: var(--prio-urgent-bg); }
+.md-fold--warn .md-fold-t, .md-fold--warn .md-fold-m, .md-fold--warn .md-fold-cta { color: var(--prio-urgent-fg); }
+
+/* — the deviation callout. Carrier 5 of 5, and the ONLY red in the card. — */
+/* The deviation alarm's rules MOVED to `project/plan/plan.css` as `.plan-dev*`.
+   It is no longer a desk thing: `PlanEditor` renders it, so it shows on the
+   project Plan tab as well as on the card. `.md-dev-acts` was not carried over
+   — it laid out the two buttons deleted in M4 and has had nothing to lay out
+   since. Every token they use is `styles/design/tokens.css`'s, so nothing about
+   how they render depends on which stylesheet they live in. */
+
+/* ————————————— cross-highlight: the OTHER side of a hover —————————————
+   Hovering a desk card lights every to-do that spawned it; hovering a to-do
+   lights every card it spawned that is still on the plate; hovering either
+   lights that project's sub-row in the sidebar's My Desk panel, and hovering
+   the sub-row lights both of them back. Three surfaces, one relation.
+
+   ONE GESTURE, NOT THREE EFFECTS. Every lit element does exactly two things:
+   its LEADING EDGE lights, and it picks up a soft accent AURA. No stroke goes
+   around anything. Which aura form a surface uses is decided by which channel
+   that surface has free, stated per rule below so it is auditable rather than
+   arbitrary — and every pair of surfaces shares at least one mark, which is
+   what makes the three read as one lit set.
+
+   WHAT THIS REPLACED, AND WHY. It was `outline: 2px dashed var(--accent)` on
+   the first two surfaces. Four things were wrong with it, none of them taste:
+
+     1. Dashed already means "provisional / not real yet" everywhere else in
+        this codebase — `.lb.unreg`, the "+ add it" ghost, `.mg-sw.unreg`,
+        ModelConfigSection's empty states, CreateProjectPage's drop zone. "This
+        to-do is linked to this card" is a statement of FACT, so the stroke
+        pattern contradicted the claim it was making.
+     2. Dash phase is not corner-aligned, so each of the four corners of a
+        `var(--r-lg)` radius drew a different partial dash — differently per
+        browser, and visible at 2px.
+     3. A dashed perimeter is the OS marquee / drag-and-drop idiom, and on the
+        to-do rail dragging is a real competing state (`.dragging`,
+        `.drag-over-top`).
+     4. `outline` was on neither element's transition list, so it snapped to
+        full strength on the first mouse-move frame.
+
+   STILL DISTINGUISHABLE from the two treatments already in the accent family,
+   now by CONTRAST AND DISTANCE rather than by dash pattern — which survives at
+   a glance, where a stroke pattern does not. `.md-card--selected` is
+   HIGH-contrast `--accent` AT the border box (the keyboard cursor) and
+   `.todo-item.is-open` is an accent WASH (loaded in the message box); linked is
+   PALE `--accent-soft` floating 3px CLEAR of the border box. Selected + linked
+   co-occur constantly — the cursor is itself a highlight source — and they
+   stack into one legible object: hard accent border, 3px softer ring, then the
+   pale hairline closing it off at exactly that ring's outer edge.
+
+   Appended at the END of the stylesheet deliberately — `.md-card--linked` is
+   one class, the same specificity as `.md-card`'s own `background: #fff`, so
+   source order is what carries the wash. */
+
+/* THE HALO, resting. Always in the box model and transparent, so
+   `outline-color` has something to transition FROM — a rule that only appears
+   when lit has no start value and cannot fade.
+
+   LEGAL ONLY BECAUSE NEITHER ROOT IS FOCUSABLE: `.md-card` and `.todo-item`
+   are plain `<div>`s, and the app's only global `:focus-visible` rule is in
+   `landing.css`, which the app shell never loads. If either root ever becomes
+   focusable, this swallows its focus ring — pinned by `desk.css.test.ts`.
+
+   `.md-card`'s `overflow: hidden` clips DESCENDANTS, not the element's own
+   outline, so the card does not self-clip. Neither scrollport cuts it either:
+   4.5px past the border box, against 30px of horizontal padding on the card
+   list (`.md-body`) and 12px on the rail (`.todo-scroll`). */
+.md-card,
+.todo-item {
+  outline: 1.5px solid transparent;
+  outline-offset: 3px;
+}
+.md-card--linked,
+.todo-item.linked { outline-color: var(--accent-soft); }
+
+/* THE LEADING EDGE. The card WIDENS the spine it already has rather than
+   growing a second mark — and on `width` alone, so the lane hue (including the
+   doubled-class urgent override above) is untouched. The row has no spine, so
+   it grows one, scaling up from 0.35 rather than appearing at full height. */
+.md-card--linked::before { width: 5px; }
+
+/* One rule for both bars, because "the same mark" is a claim that has to be
+   structurally true and not merely currently-identical: split these and they
+   drift. `.mdr-sub` is the sidebar panel's sub-row — the third view of this
+   same set — and the bar sits in the 24px `pl-6` indent, well clear of its
+   icon and label.
+
+   FULL HEIGHT, not a centred tick. At 56% the bar read as a separate little
+   glyph floating beside the row rather than as the row's own lit edge — and on
+   a tall wrapped to-do (title over three lines, chips, meta) the gap above and
+   below it grew until the mark no longer claimed the item it belonged to. It
+   spans the padding box now, so the taller the row the more edge it lights.
+   `border-radius` went from `0 3px 3px 0` (square left corners, safe while the
+   bar sat well inside the row) to a uniform 3px: at full height its corners now
+   land exactly where the row's own 10px radius curves away, and square ones
+   would jut past the card whenever the row is painted (`:hover`, `.is-open`).
+
+   Still `top: 50%` + `translateY(-50%)`: the resting `scaleY(0.35)` has to grow
+   from the CENTRE, and a `top: 0` bar would grow from the middle of a box
+   anchored at the top — the mark would drift downward as it faded in. */
+.todo-item::after,
+.mdr-sub::after {
+  content: ""; position: absolute; left: 0; top: 50%;
+  width: 2.5px; height: 100%; border-radius: 3px;
+  background: var(--accent); pointer-events: none;
+  opacity: 0; transform: translateY(-50%) scaleY(0.35);
+  transition: opacity var(--t-med), transform var(--t-med);
+}
+.todo-item.linked::after,
+.mdr-sub--linked::after { opacity: 1; transform: translateY(-50%) scaleY(1); }
+
+/* THE AURA. Card gets the wash; row does NOT. A to-do row's background channel
+   is already spent two ways — `:hover` white and `.is-open` accent-softer —
+   so a third claim on it would either lose the
+   cascade or overwrite a state the row is genuinely in. The row's aura is the
+   halo above instead, which is the mark it shares with the card. */
+.md-card--linked { background: var(--accent-softer); }
+
+/* The sidebar sub-row takes the wash rather than a halo: it is a `<button>`,
+   so a resting transparent outline there WOULD eat the UA focus ring — the one
+   thing the two desk surfaces were safe from. `position: relative` is what the
+   bar is positioned against and is load-bearing, not decoration.
+
+   Its own `hover:bg-sidebar-hover` (Tailwind, `(0,2,0)`) outranks this
+   `(0,1,0)` wash on purpose: the row under the pointer is the DRIVER and
+   already has hover feedback of its own, so the wash is for rows lit from the
+   desk side. The bar shows either way, which is the row's self-mark. */
+.mdr-sub { position: relative; transition: background var(--t-med); }
+.mdr-sub--linked { background: var(--accent-softer); }

@@ -1,0 +1,160 @@
+/* ===========================================================
+   ClawMeets — Colors & Type
+   =========================================================== */
+
+@font-face {
+  font-family: "Nunito";
+  font-style: normal;
+  font-weight: 300 800;
+  font-display: swap;
+  src: url("fonts/Nunito-Latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122;
+}
+@font-face {
+  font-family: "Nunito";
+  font-style: normal;
+  font-weight: 300 800;
+  font-display: swap;
+  src: url("fonts/Nunito-LatinExt.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+1E00-1E9F, U+1EF2-1EFF;
+}
+@font-face {
+  font-family: "Nunito-dup";
+  font-style: normal;
+  font-weight: 300 800;
+  font-display: swap;
+  src: url("fonts/Nunito-LatinExt.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+1E00-1E9F, U+1EF2-1EFF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("fonts/JetBrainsMono-Latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+20AC, U+2122;
+}
+
+:root {
+  /* ===== Surface ===== */
+  --bg-sidebar: #f3edf7;
+  --bg-sidebar-section: #ebe3f1;
+  --bg-canvas: #ffffff;
+  --bg-rail: #faf7fc;
+  --bg-card: #ffffff;
+  --bg-card-hover: #fbf9fd;
+  --bg-card-selected: #f6f1fb;
+  --bg-proposal: #f6f0fc;
+  --bg-chip: #ffffff;
+  --bg-pill-muted: #f1edf5;
+
+  /* ===== Ink ===== */
+  --ink-1: #1f1826;           /* primary text */
+  --ink-2: #433859;           /* secondary */
+  --ink-3: #7a6e8c;           /* tertiary / meta */
+  --ink-4: #a79bb7;           /* quiet / placeholder */
+  --ink-on-accent: #ffffff;
+
+  /* ===== Accent — ClawMeets purple ===== */
+  --accent: #6b2aa0;
+  --accent-deep: #52217b;
+  --accent-soft: #e4d6ef;
+  --accent-softer: #f1e6fa;
+
+  /* ===== Source colors (message origin) ===== */
+  --src-email:   #3b6fd1;
+  --src-sms:     #2aa37a;
+  --src-chat:    #b4458d;
+  --src-dm:      #6b2aa0;
+  --src-mention: #c07a1a;
+  --src-notif:   #6f6f7a;
+
+  /* ===== Priority colors ===== */
+  --prio-quick-fg:  #0d6d57; --prio-quick-bg:  #d9efe5;
+  --prio-urgent-fg: #9a2540; --prio-urgent-bg: #f8dde4;
+  --prio-normal-fg: #433859; --prio-normal-bg: #ece3f3;
+  --prio-low-fg:    #6a6274; --prio-low-bg:    #ececf0;
+  --prio-later-fg:  #8a8294; --prio-later-bg:  #f3f2f5;
+
+  /* ===== Lines ===== */
+  --line-1: #ece5f1;
+  --line-2: #dfd4e6;
+  --line-strong: #c9bcd3;
+
+  /* ===== Interrupt (live-mode banner — high-urgency arrivals) ===== */
+  --interrupt:        #c83358;
+  --interrupt-bg:     #fff5f7;
+  --interrupt-border: #f3c9d2;
+
+  /* ===== Avatar palette ===== */
+  --av-pink:   #e63b8a;
+  --av-teal:   #0fb3a2;
+  --av-green:  #2fbf5a;
+  --av-amber:  #d48a1c;
+  --av-indigo: #4b58c2;
+  --av-slate:  #6f6f7a;
+  /* Presence dot for offline/idle agents. Deliberately darker than --ink-4:
+     a dot is a non-text UI indicator, so it needs 3:1 against the surface it
+     sits on (WCAG 1.4.11). This clears ~4.9:1 on white and ~4.3:1 on the
+     sidebar fill; --ink-4 only managed ~2.3:1 and read as a smudge. */
+  --av-offline: #6b7280;
+
+  /* ===== Radius ===== */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+
+  /* ===== Shadow ===== */
+  --shadow-1: 0 1px 0 rgba(31,24,38,.04), 0 1px 2px rgba(31,24,38,.04);
+  --shadow-2: 0 2px 8px rgba(31,24,38,.08);
+  --shadow-pop: 0 12px 40px rgba(31,24,38,.18);
+
+  /* ===== Spacing / density ===== */
+  --card-py: 14px;
+  --card-px: 18px;
+  --gap-row: 10px;
+
+  /* ===== Motion (transition/animation durations) ===== */
+  --t-fast: 0.12s;
+  --t-med: 0.15s;
+  --t-slow: 0.18s;
+  --t-leave: 0.34s;
+  /* Easing paired with --t-leave. Referenced by desk.css's to-do leave
+     transition and the take-over rise; it was never defined, which made those
+     shorthands invalid and silently dropped both animations. */
+  --ease-leave: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  /* ===== Type ===== */
+  --font-sans: "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* ===== Semantic type roles ===== */
+  --t-display-size: 28px;  --t-display-weight: 800; --t-display-tracking: -0.015em;
+  --t-h1-size: 20px;       --t-h1-weight: 800;      --t-h1-tracking: -0.01em;
+  --t-h2-size: 16px;       --t-h2-weight: 800;      --t-h2-tracking: 0;
+  --t-h3-size: 13.5px;     --t-h3-weight: 700;      --t-h3-tracking: 0;
+  --t-body-size: 14px;     --t-body-weight: 400;    --t-body-line: 1.5;
+  --t-body-sm-size: 12.5px;
+  --t-meta-size: 11.5px;   --t-meta-weight: 500;
+  --t-eyebrow-size: 10.5px; --t-eyebrow-weight: 800; --t-eyebrow-tracking: 0.08em;
+  --t-code-size: 12px;
+}
+
+/* ===== Semantic element styles ===== */
+h1, .h1 { font: var(--t-h1-weight) var(--t-h1-size)/1.2 var(--font-sans); letter-spacing: var(--t-h1-tracking); color: var(--ink-1); margin: 0; }
+h2, .h2 { font: var(--t-h2-weight) var(--t-h2-size)/1.3 var(--font-sans); color: var(--ink-1); margin: 0; }
+h3, .h3 { font: var(--t-h3-weight) var(--t-h3-size)/1.35 var(--font-sans); color: var(--ink-1); margin: 0; }
+.display { font: var(--t-display-weight) var(--t-display-size)/1.15 var(--font-sans); letter-spacing: var(--t-display-tracking); color: var(--ink-1); }
+p, .body { font: var(--t-body-weight) var(--t-body-size)/var(--t-body-line) var(--font-sans); color: var(--ink-1); }
+.body-sm { font: 400 var(--t-body-sm-size)/1.5 var(--font-sans); color: var(--ink-2); }
+.meta { font: var(--t-meta-weight) var(--t-meta-size)/1.35 var(--font-sans); color: var(--ink-3); }
+.eyebrow {
+  font: var(--t-eyebrow-weight) var(--t-eyebrow-size)/1.2 var(--font-sans);
+  letter-spacing: var(--t-eyebrow-tracking);
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+code, .code, .mono {
+  font-family: var(--font-mono);
+  font-size: var(--t-code-size);
+}

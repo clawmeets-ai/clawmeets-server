@@ -1,0 +1,126 @@
+@import 'highlight.js/styles/github.css';
+@import './design/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body {
+    @apply h-full;
+  }
+  /* #root owns the *dynamic* viewport height so the app shell tracks the
+     mobile address-bar collapse/expand instead of pinning to a stale 100vh.
+     vh first as the fallback for browsers without dvh support. */
+  #root {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  /* A position:fixed element's containing block is the LAYOUT viewport, which
+     Chrome Android sizes to the toolbar-hidden height — so #root's dvh never
+     reaches the mobile drawer and `inset-y-0` runs it off the bottom of the
+     screen. The drawer needs its own dvh height. vh first as the fallback. */
+  .h-viewport {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  body {
+    @apply bg-gray-100 text-gray-900 antialiased;
+  }
+}
+
+@layer components {
+  .auth-input::placeholder {
+    color: var(--ink-4);
+  }
+  .auth-input:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 3px var(--accent-softer);
+  }
+
+  /* Sign-up stepped flow: per-step content fade/slide-in + success pop. */
+  .cm-fade {
+    animation: cm-fade 0.25s ease;
+  }
+  @keyframes cm-fade {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .cm-pop {
+    animation: cm-pop 0.4s cubic-bezier(0.2, 0.8, 0.3, 1.2);
+  }
+  @keyframes cm-pop {
+    0%   { transform: scale(0); }
+    100% { transform: scale(1); }
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 rounded-full;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-400;
+  }
+
+  /* Markdown prose styling */
+  .prose {
+    --tw-prose-body: #1f2937;
+    --tw-prose-headings: #111827;
+    --tw-prose-bold: #111827;
+    --tw-prose-links: #2563eb;
+    --tw-prose-counters: #4b5563;
+    --tw-prose-bullets: #4b5563;
+    --tw-prose-hr: #d1d5db;
+    --tw-prose-quotes: #374151;
+    --tw-prose-quote-borders: #6b7280;
+    --tw-prose-th-borders: #d1d5db;
+    --tw-prose-td-borders: #e5e7eb;
+  }
+
+  .prose pre {
+    @apply bg-gray-50 p-4 rounded-lg overflow-x-auto;
+  }
+
+  .prose pre code {
+    @apply bg-transparent p-0 text-gray-800;
+  }
+
+  .prose table {
+    @apply w-full border-collapse;
+  }
+
+  .prose th {
+    @apply bg-gray-100 font-semibold text-left px-3 py-2 border border-gray-300;
+  }
+
+  .prose td {
+    @apply px-3 py-2 border border-gray-200;
+  }
+
+  .prose blockquote {
+    @apply border-l-4 border-gray-400 pl-4 italic text-gray-700;
+  }
+
+  .prose code:not(pre code) {
+    @apply bg-gray-100 text-gray-800 px-1.5 py-0.5 rounded text-sm font-mono;
+  }
+
+  .prose hr {
+    @apply border-gray-300;
+  }
+
+}

@@ -1,0 +1,253 @@
+/* RunnerSetup — zero-state runner install, split across two numbered steps:
+   Step 0 "Setup Python Environment" (a collapsed `.rs` drawer, per-OS uv tabs)
+   and Step 1 "Install ClawMeets" (an open `.rs__methods` block, uv/pip/pipx tabs).
+   Scoped under `.welcome-page` to match the surrounding page and reuse its
+   design tokens (--accent, --ink-*, --line-*, --r-*). Uses the same dark
+   terminal palette (#1f1826 / #f3edf7) as the existing `.cmd` block so the
+   verbatim <pre> code reads as a terminal without new tokens. Collapse is native
+   <details> (matches the existing `.bootstrap__sc` idiom — zero JS, SSR-safe). */
+
+/* ---- Step 0 drawer ---- */
+.welcome-page .rs {
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  background: #fff;
+  overflow: hidden;
+}
+
+/* Summary row = clickable header (the Step 0 "Install uv" headline). */
+.welcome-page .rs__summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.welcome-page .rs__summary::-webkit-details-marker { display: none; }
+.welcome-page .rs__summary:hover { background: var(--bg-sidebar); }
+.welcome-page .rs__summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.welcome-page .rs__summary-text { flex: 1; min-width: 0; }
+.welcome-page .rs__summary-title {
+  font-weight: 800;
+  font-size: 15px;
+  color: var(--ink-1);
+  letter-spacing: -0.01em;
+}
+.welcome-page .rs__summary-sub {
+  color: var(--ink-3);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 3px;
+}
+
+.welcome-page .rs__chev {
+  flex-shrink: 0;
+  color: var(--ink-3);
+  margin-top: 2px;
+  transition: transform 0.15s ease;
+}
+/* Point the chevron up when the drawer is open (collapsed = pointing down). */
+.welcome-page .rs[open] > .rs__summary .rs__chev {
+  transform: rotate(180deg);
+}
+
+/* ---- Step 1: install-method block (rendered open, not a drawer) ---- */
+.welcome-page .rs__methods {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.welcome-page .rs__intro {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.welcome-page .rs__intro strong {
+  color: var(--ink-1);
+  font-weight: 700;
+}
+
+/* ---- Body ---- */
+.welcome-page .rs__body {
+  padding: 4px 16px 18px;
+  border-top: 1px solid var(--line-1);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Reserved slot for a future "Download the installer" button (forward-compat).
+   Empty now — no box, no space taken until something lands here. */
+.welcome-page .rs__installer-slot:empty {
+  display: none;
+}
+
+/* A label line + its code block. */
+.welcome-page .rs__unit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.welcome-page .rs__label {
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  padding-left: 2px;
+}
+.welcome-page .rs__label code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: var(--bg-sidebar);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--line-2);
+  color: var(--ink-1);
+}
+
+/* ---- Verbatim terminal code block ---- */
+.welcome-page .rs__code {
+  position: relative;
+  background: #1f1826;
+  border-radius: var(--r-sm);
+}
+/* white-space: pre + overflow-x: auto — the exact command string, never
+   reflowed or wrapped. Right padding leaves room for the copy button. */
+.welcome-page .rs__pre {
+  margin: 0;
+  padding: 12px 46px 12px 14px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #f3edf7;
+  white-space: pre;
+}
+.welcome-page .rs__pre code {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  padding: 0;
+  border: 0;
+  white-space: pre;
+}
+.welcome-page .rs__copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  color: #c7a8e0;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.welcome-page .rs__copy:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.welcome-page .rs__copy--copied { color: #a7d9c5; background: rgba(167, 217, 197, 0.12); }
+
+/* ---- Muted blockquote helper note ---- */
+.welcome-page .rs__note {
+  margin: 2px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--line-2);
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ---- Platform tabs (Windows / macOS / Linux) ---- */
+.welcome-page .rs__tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.welcome-page .rs__tablist {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+}
+.welcome-page .rs__tab {
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--ink-3);
+  background: none;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.welcome-page .rs__tab:hover { color: var(--ink-1); }
+.welcome-page .rs__tab--active {
+  background: #fff;
+  color: var(--accent);
+  box-shadow: var(--shadow-1, 0 1px 2px rgba(0, 0, 0, 0.08));
+}
+.welcome-page .rs__tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.welcome-page .rs__panel[hidden] { display: none; }
+
+/* ---- Step 2 prerequisite callout (Windows Developer Mode) ----
+   Lives in WelcomePage's Step 2 `.panel`, between two `.cmd-unit` blocks. It
+   carries its own vertical margin because `.panel .cmd-unit + .cmd-unit` only
+   spaces ADJACENT command units, and this block sits between them. Tinted with
+   the accent tokens rather than a warning color: it is a prerequisite to read,
+   not an error that has already happened. */
+.welcome-page .rs__prereq {
+  margin: 18px 0;
+  padding: 14px 16px;
+  background: var(--accent-softer);
+  border: 1px solid var(--accent-soft);
+  border-radius: var(--r-md);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.welcome-page .rs__prereq-title {
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--accent-deep);
+  letter-spacing: -0.01em;
+}
+.welcome-page .rs__prereq-body {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.welcome-page .rs__prereq-body strong {
+  color: var(--ink-1);
+  font-weight: 700;
+}
+/* The WinError string is long and must stay readable at any width — let it
+   break anywhere rather than forcing a horizontal scroll on the callout. */
+.welcome-page .rs__prereq-body code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: #fff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--line-2);
+  color: var(--ink-1);
+  overflow-wrap: anywhere;
+}
+/* `.rs__note` is tuned for white (--ink-3 clears ~4.8:1 there). On the tinted
+   callout it drops to ~4.0:1, under the 4.5:1 AA floor for 12px text — so the
+   note darkens one step here, and its rule darkens to stay visible on the tint. */
+.welcome-page .rs__prereq .rs__note {
+  color: var(--ink-2);
+  border-left-color: var(--line-strong);
+}

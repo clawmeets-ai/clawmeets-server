@@ -1,0 +1,1167 @@
+# SPDX-License-Identifier: BUSL-1.1
+"""
+clawmeets/doctor.py
+
+The ONE definition of "your setup is working", and the exact command that fixes
+each way it isn't.
+
+Three surfaces ask that question and they used to answer it differently: the
+install script (did the thing I just did take?), the web app's zero state (is
+this account usable yet?), and a user standing in a terminal wondering why no
+agent ever replied. Three definitions meant a checklist could show green while
+the runner could not invoke a model, which is the specific failure this module
+exists to make impossible. Everything here is computed once, in one place, and
+the other three read it — the CLI prints it (``cli_doctor``), the machine
+reports it on check-in (``clawmeets_daemon.client``), and the web checklist
+renders what the server was told.
+
+## A diagnosis is not a fix
+
+Every failing check carries :attr:`Check.fix` — a command the user can paste,
+not a description of their situation. "Claude CLI not logged in" is a
+diagnosis; ``claude login`` is a fix. Where no command can do it (a browser
+sign-in, turning on Developer Mode) the check carries :attr:`Check.fix_note`
+instead and ``fix`` stays empty, so a caller can always tell "paste this" from
+"go do this" without parsing prose.
+
+## Stdlib only, and why that is load-bearing
+
+No pydantic, no httpx at import time, nothing from ``clawmeets.llm``. Doctor is
+most valuable on a machine where the dependency stack is half-installed, and a
+diagnostic that cannot import is worse than no diagnostic. Server reachability
+is the one network call and it uses ``urllib``; it degrades to a failed check
+rather than raising.
+
+## Model-CLI login detection is a heuristic, and says so
+
+There is no portable, non-interactive way to ask ``claude`` / ``codex`` /
+``gemini`` / ``agy`` "are you signed in?" — the credential lives in an OS
+keychain on one platform and a dotfile on another, and running the CLI for real
+costs a token and a network round-trip. So :data:`MODEL_CLIS` looks for the
+credential artifacts each CLI is known to write (a file, or on macOS a named
+login-keychain item probed by existence only), plus the API-key environment
+variables that bypass login entirely. A false "not logged in" costs the user one
+redundant ``claude login``; a false "logged in" costs them a silent agent, so
+the checks are deliberately biased toward reporting trouble. ``detail`` names
+what was actually looked for, so a wrong answer is debuggable instead of
+mysterious.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Optional
+
+# Kept in step with clawmeets/cli_lifecycle.py rather than imported from it:
+# doctor must answer on a machine where importing the CLI module fails, which is
+# exactly when its answer matters most.
+DEFAULT_SERVER = os.environ.get("CLAWMEETS_SERVER_URL", "https://clawmeets.ai")
+DEFAULT_DATA_DIR = os.environ.get(
+    "CLAWMEETS_DATA_DIR", str(Path.home() / ".clawmeets")
+)
+
+# How long any probe may take. Short on purpose: doctor runs inside the install
+# script's critical path and at the top of a support conversation, and a
+# diagnostic that hangs teaches people not to run it.
+PROBE_TIMEOUT_SECONDS = 10
+
+# The oldest CLI whose reports this module trusts. Bumped together with the
+# bootstrap skill's floor.
+MIN_CLI_VERSION = "1.2.4"
+
+
+# ---------------------------------------------------------------------------
+# The result shape
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Check:
+    """One thing that is either working or fixable, never merely "wrong".
+
+    ``id`` is the stable machine name (the web checklist keys rows off it and
+    the daemon reports it); ``title`` is the sentence a user reads and obeys the
+    product's vocabulary rule — it says "your computer", never "runner" or
+    "daemon".
+
+    ``ok`` is three-valued in effect: ``True`` passed, ``False`` failed, and a
+    check may set ``ok=True`` with a non-empty ``fix_note`` to mean "working,
+    but there is something worth doing". Nothing is reported as failed that the
+    user cannot act on.
+    """
+
+    id: str
+    title: str
+    ok: bool
+    detail: str = ""
+    fix: str = ""
+    fix_note: str = ""
+    # False for checks that are informative but must not hold back a green
+    # checklist — a second model CLI, a nice-to-have. The install script exits
+    # non-zero only on a blocking failure.
+    blocking: bool = True
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class Report:
+    """Every check, plus the one-line verdict the callers actually branch on."""
+
+    checks: list[Check] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        """True when nothing BLOCKING failed.
+
+        A non-blocking failure (no second model CLI) must not make the install
+        script report defeat after a successful install.
+        """
+        return all(c.ok for c in self.checks if c.blocking)
+
+    def failed(self) -> list[Check]:
+        return [c for c in self.checks if not c.ok]
+
+    def get(self, check_id: str) -> Optional[Check]:
+        return next((c for c in self.checks if c.id == check_id), None)
+
+    def to_dict(self) -> dict:
+        return {
+            "ok": self.ok,
+            "checks": [c.to_dict() for c in self.checks],
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Model CLIs
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ModelCLI:
+    """One code CLI the runner can drive, and how to tell it is usable.
+
+    ``binary`` mirrors the provider class's default in ``clawmeets/llm/`` —
+    ``agy`` for Antigravity, not ``antigravity``. ``tests/test_doctor.py``
+    asserts the two stay in step, because a doctor that probes a binary the
+    runner never shells is worse than no probe.
+    """
+
+    id: str
+    label: str
+    binary: str
+    # The ``local_settings.llm_provider`` value that shells this CLI
+    # (``openai`` drives ``codex``). ``tests/test_doctor.py`` pins it against
+    # ``cli_runner._construct_llm_provider``.
+    provider: str
+    # Credential artifacts the CLI writes once signed in. Any one present is
+    # taken as signed in. `~` is expanded at check time.
+    login_paths: tuple[str, ...]
+    # Environment variables that make the CLI usable WITHOUT an interactive
+    # login. Any one set skips the login check entirely.
+    login_env: tuple[str, ...]
+    # macOS login-keychain items (service, account) the CLI stores its token in
+    # instead of a file. Probed by existence only; the secret is never read.
+    login_keychain: tuple[tuple[str, str], ...] = ()
+    login_fix: str = ""
+    login_note: str = ""
+    install_fix: str = ""
+    install_note: str = ""
+
+
+# Ordered by how likely the target user already has one. The first PRESENT entry
+# is the one the checklist reports on; the rest are informational.
+MODEL_CLIS: tuple[ModelCLI, ...] = (
+    ModelCLI(
+        id="claude",
+        provider="claude",
+        label="Claude Code",
+        binary="claude",
+        # macOS keeps the OAuth token in the login keychain, so there is no file
+        # to find there; `~/.claude.json` is still written on every platform and
+        # carries the signed-in account once login completes.
+        login_paths=("~/.claude/.credentials.json", "~/.claude.json"),
+        login_env=("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+        login_fix="claude login",
+        install_note="Install Claude Code: https://docs.anthropic.com/claude-code",
+    ),
+    ModelCLI(
+        id="codex",
+        provider="openai",
+        label="Codex",
+        binary="codex",
+        login_paths=("~/.codex/auth.json",),
+        login_env=("OPENAI_API_KEY",),
+        login_fix="codex login",
+        install_note="Install Codex: https://github.com/openai/codex",
+    ),
+    ModelCLI(
+        id="antigravity",
+        provider="antigravity",
+        label="Antigravity",
+        binary="agy",
+        login_paths=("~/.antigravity/oauth_creds.json", "~/.config/antigravity"),
+        login_env=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        # On macOS `agy` keeps its Google token in the keychain and writes no
+        # credential file. `~/.gemini/antigravity-cli/` exists from install
+        # onward, so it does not prove a sign-in.
+        login_keychain=(("gemini", "antigravity"),),
+        # No non-interactive login verb: `agy` completes a Google sign-in in a
+        # browser the first time it runs, so the fix is to run it once.
+        login_note="Run `agy` once on this computer and complete the Google sign-in",
+        install_note=(
+            "Install the Antigravity CLI: "
+            "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+        ),
+    ),
+    ModelCLI(
+        id="gemini",
+        provider="gemini",
+        label="Gemini CLI",
+        binary="gemini",
+        login_paths=("~/.gemini/oauth_creds.json",),
+        login_env=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        # An API key entered at the `gemini` prompt lands in the keychain.
+        login_keychain=(("gemini-cli-api-key", "default-api-key"),),
+        login_note="Run `gemini` once on this computer and complete the sign-in",
+        install_note="Install Gemini CLI: https://github.com/google-gemini/gemini-cli",
+    ),
+    ModelCLI(
+        id="opencode",
+        provider="opencode",
+        label="OpenCode",
+        binary="opencode",
+        login_paths=("~/.local/share/opencode/auth.json", "~/.config/opencode"),
+        login_env=(),
+        login_fix="opencode auth login",
+        install_note=(
+            "Install OpenCode: curl -fsSL https://opencode.ai/install | bash"
+        ),
+    ),
+)
+
+
+@dataclass(frozen=True)
+class ModelCLIState:
+    """What we found out about one model CLI on this machine."""
+
+    id: str
+    label: str
+    binary: str
+    present: bool
+    logged_in: bool
+    version: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def _which(binary: str) -> Optional[str]:
+    return shutil.which(binary)
+
+
+def _probe_version(binary: str) -> str:
+    """``<binary> --version``, or "" if it cannot be asked.
+
+    Never raises. A CLI that is on PATH but refuses ``--version`` is still
+    reported as present — the runner will find out the hard way and say so, and
+    a doctor that calls a working CLI broken sends the user on a detour.
+    """
+    try:
+        result = subprocess.run(
+            [binary, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    # Some CLIs print their version to stderr; take whichever spoke, first line
+    # only (a few print a banner underneath).
+    lines = (result.stdout or result.stderr or "").strip().splitlines()
+    return lines[0].strip() if lines else ""
+
+
+def _looks_logged_in(spec: ModelCLI) -> bool:
+    """Best-effort: did this CLI leave a credential behind, or is a key set?
+
+    See the module docstring on why this is a heuristic. Biased toward reporting
+    trouble: an env var counts (it genuinely bypasses login), a file only counts
+    if it exists.
+    """
+    if any(os.environ.get(name) for name in spec.login_env):
+        return True
+    if any(Path(p).expanduser().exists() for p in spec.login_paths):
+        return True
+    return sys.platform == "darwin" and any(
+        _keychain_has(service, account) for service, account in spec.login_keychain
+    )
+
+
+def _keychain_has(service: str, account: str) -> bool:
+    """Does the macOS login keychain hold this item? Never reads the secret (no ``-w``)."""
+    try:
+        return subprocess.run(
+            ["security", "find-generic-password", "-s", service, "-a", account],
+            capture_output=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def inspect_model_clis() -> list[ModelCLIState]:
+    """Every model CLI in :data:`MODEL_CLIS`, present or not.
+
+    Returns the full list rather than only what was found, so a caller can say
+    "install one of these" with the real names instead of a generic complaint.
+    """
+    states: list[ModelCLIState] = []
+    for spec in MODEL_CLIS:
+        path = _which(spec.binary)
+        present = path is not None
+        states.append(
+            ModelCLIState(
+                id=spec.id,
+                label=spec.label,
+                binary=spec.binary,
+                present=present,
+                logged_in=_looks_logged_in(spec) if present else False,
+                version=_probe_version(spec.binary) if present else "",
+            )
+        )
+    return states
+
+
+def pick_provider(states: Optional[list[ModelCLIState]] = None) -> Optional[ModelCLI]:
+    """The model CLI a new agent should use on this machine: the first one in
+    :data:`MODEL_CLIS` order that is installed and signed in, or None.
+
+    Read by ``clawmeets assistant register`` when no ``--llm-provider`` is
+    given, so the provider it writes is one :func:`check_assistant_model` will
+    pass rather than a default the machine may not have.
+    """
+    states = states if states is not None else inspect_model_clis()
+    usable = {s.id for s in states if s.present and s.logged_in}
+    return next((spec for spec in MODEL_CLIS if spec.id in usable), None)
+
+
+# ---------------------------------------------------------------------------
+# Individual checks
+# ---------------------------------------------------------------------------
+
+
+def _data_dir() -> Path:
+    return Path(DEFAULT_DATA_DIR).expanduser()
+
+
+def _read_json(path: Path) -> Optional[dict]:
+    """Read a JSON object, or None. Never raises — a corrupt file is "absent"."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def check_install() -> Check:
+    """Is the ``clawmeets`` CLI itself on PATH?
+
+    Worth checking even though this code is usually running FROM that CLI: the
+    install script calls doctor in a fresh shell, where the real failure is
+    ``uv`` putting the binary in ``~/.local/bin`` and that directory not being on
+    PATH. The fix is a PATH export, not a reinstall, and saying so saves the most
+    common install-time dead end.
+    """
+    path = _which("clawmeets")
+    if path:
+        return Check(
+            id="install",
+            title="ClawMeets is installed",
+            ok=True,
+            detail=f"{path} ({_probe_version('clawmeets') or 'version unknown'})",
+        )
+    return Check(
+        id="install",
+        title="ClawMeets is installed",
+        ok=False,
+        detail="`clawmeets` is not on PATH",
+        fix='export PATH="$HOME/.local/bin:$PATH"',
+        fix_note=(
+            "uv installs to ~/.local/bin. Add that line to your shell profile "
+            "(~/.zshrc or ~/.bashrc) so it survives a new terminal. If it is "
+            f"genuinely missing, reinstall: uv tool install --python 3.11 "
+            f"'clawmeets>={MIN_CLI_VERSION}'"
+        ),
+    )
+
+
+def check_session(username: str = "") -> Check:
+    """Is an account signed in and remembered on this machine?
+
+    ``username`` checks that account instead of the computer's default one —
+    the installer sets up an account that need not be the default.
+
+    Reads the same ``config/<user>/settings.json`` the CLI writes, directly
+    rather than through ``cli_lifecycle``, so the check survives a broken
+    import. A file with no ``token`` is "signed out", not "corrupt" — that is
+    exactly the state ``clawmeets user logout`` leaves behind.
+    """
+    data_dir = _data_dir()
+    username = username or current_username()
+
+    if not username:
+        return Check(
+            id="session",
+            title="You are signed in on this computer",
+            ok=False,
+            detail="No account is signed in",
+            fix="clawmeets user login <username>",
+            fix_note=(
+                "Signed up in the browser? Re-run the one-line install command "
+                "from the web app instead — it signs in without a password."
+            ),
+        )
+
+    config = _read_json(data_dir / "config" / username / "settings.json") or {}
+    if not (config.get("user") or {}).get("token"):
+        return Check(
+            id="session",
+            title="You are signed in on this computer",
+            ok=False,
+            detail=f'"{username}" is set up but has no saved session',
+            fix=f"clawmeets user login {username}",
+        )
+
+    return Check(
+        id="session",
+        title="You are signed in on this computer",
+        ok=True,
+        detail=f'Signed in as "{username}"',
+    )
+
+
+def current_username() -> str:
+    """The signed-in account, or "". Shared by several checks and the CLI."""
+    try:
+        return (_data_dir() / "config" / "current_user").read_text().strip()
+    except OSError:
+        return ""
+
+
+def _assistant_dir(username: str) -> Optional[Path]:
+    """``agents/<user>-assistant-<id>/`` on this machine, or None. Archived
+    registrations are renamed ``DELETED-…`` and so never match."""
+    agents = _data_dir() / "agents"
+    prefix = f"{username}-assistant"
+    found = sorted(
+        d
+        for d in (agents.iterdir() if agents.is_dir() else [])
+        if d.is_dir() and d.name.startswith(prefix)
+    )
+    return found[0] if found else None
+
+
+def check_assistant(username: str = "") -> Check:
+    """Does this machine hold the user's assistant?
+
+    Presence is a directory under ``agents/`` whose name is
+    ``<user>-assistant`` — the same thing ``cli_lifecycle`` enumerates to decide
+    what to start. Whether it is ONLINE is deliberately not asked here: that is
+    a fact about a socket the server owns, the web checklist reads it from the
+    server, and a local process check would answer a different question.
+    """
+    username = username or current_username()
+    if not username:
+        return Check(
+            id="assistant",
+            title="Your assistant is set up",
+            ok=False,
+            detail="No account is signed in yet",
+            fix="clawmeets user login <username>",
+        )
+    found = _assistant_dir(username)
+    if found is None:
+        return Check(
+            id="assistant",
+            title="Your assistant is set up",
+            ok=False,
+            detail=f'No assistant found for "{username}"',
+            fix="clawmeets assistant register",
+        )
+    return Check(
+        id="assistant",
+        title="Your assistant is set up",
+        ok=True,
+        detail=found.name,
+    )
+
+
+def check_model_cli(states: Optional[list[ModelCLIState]] = None) -> list[Check]:
+    """One blocking check for "a model CLI the runner can actually use", plus
+    a non-blocking note per other CLI that is installed but signed out.
+
+    Split that way because the requirement is ONE working CLI, not all of them.
+    A user with Claude Code signed in and a stale ``gemini`` on PATH is fully
+    working, and failing them over the Gemini install would be the checklist
+    lying in the other direction.
+    """
+    states = states if states is not None else inspect_model_clis()
+    specs = {s.id: s for s in MODEL_CLIS}
+
+    usable = [s for s in states if s.present and s.logged_in]
+    signed_out = [s for s in states if s.present and not s.logged_in]
+
+    if usable:
+        primary = Check(
+            id="model_cli",
+            title="A model CLI is installed and signed in",
+            ok=True,
+            detail=", ".join(s.label for s in usable),
+        )
+        # With one CLI already working, the rest are the user's business.
+        also_mention = signed_out
+    elif signed_out:
+        # Installed but signed out — the highest-value fix in this module, and
+        # the one the old setup flow reported not at all.
+        first, *rest = signed_out
+        spec = specs[first.id]
+        primary = Check(
+            id="model_cli",
+            title="A model CLI is installed and signed in",
+            ok=False,
+            detail=f"{first.label} is installed but not signed in",
+            fix=spec.login_fix,
+            fix_note=spec.login_note,
+        )
+        also_mention = rest
+    else:
+        claude = specs["claude"]
+        primary = Check(
+            id="model_cli",
+            title="A model CLI is installed and signed in",
+            ok=False,
+            detail="None found. Looked for: "
+            + ", ".join(s.binary for s in MODEL_CLIS),
+            fix_note=(
+                f"{claude.install_note}, then run `{claude.login_fix}`. "
+                "Any one of Claude Code, Codex, Antigravity, Gemini CLI or "
+                "OpenCode works."
+            ),
+        )
+        also_mention = []
+
+    # Every OTHER installed-but-signed-out CLI, reported once and non-blocking:
+    # the user may have meant to use it, but one working CLI is the requirement.
+    extras = [
+        Check(
+            id=f"model_cli.{s.id}",
+            title=f"{s.label} is signed in",
+            ok=False,
+            detail=f"{s.label} is installed but not signed in",
+            fix=specs[s.id].login_fix,
+            fix_note=specs[s.id].login_note,
+            blocking=False,
+        )
+        for s in also_mention
+    ]
+    return [primary, *extras]
+
+
+# Providers that run in-process with an API key instead of shelling a CLI.
+# ``tests/test_doctor.py`` checks every provider the runner accepts is either
+# one of these, a meta-provider, or a ``MODEL_CLIS`` entry's ``provider``.
+IN_PROCESS_PROVIDER_SUFFIXES = ("-api", "-native")
+META_PROVIDER_IDS = ("smart",)
+
+
+def check_assistant_model(
+    states: Optional[list[ModelCLIState]] = None,
+    username: str = "",
+) -> Optional[Check]:
+    """Can the assistant's OWN model CLI run here?
+
+    :func:`check_model_cli` asks whether ANY CLI works; the assistant shells
+    exactly one — ``local_settings.llm_provider`` in its ``card.json``,
+    ``claude`` when unset, the same default the agent applies at start. With
+    only Codex signed in, the first passes while the assistant cannot start, so
+    this is the check that keeps a green report honest.
+
+    None when there is no assistant on this machine (``check_assistant``
+    already says so) or it uses an in-process provider (``-api`` /
+    ``-native``: no CLI to check). A ``smart`` assistant passes when ANY of
+    its routes can run here (:func:`_check_smart_assistant`).
+    """
+    username = username or current_username()
+    assistant_dir = _assistant_dir(username) if username else None
+    if assistant_dir is None:
+        return None
+    card = _read_json(assistant_dir / "card.json") or {}
+    settings = card.get("local_settings") or {}
+    provider = str(settings.get("llm_provider") or "claude").lower()
+    states = states if states is not None else inspect_model_clis()
+    if provider in META_PROVIDER_IDS:
+        return _check_smart_assistant(settings.get("smart_routes") or [], states)
+    if provider.endswith(IN_PROCESS_PROVIDER_SUFFIXES):
+        return None
+    # `claude` pointed at a local endpoint (llm_base_url) is handed a token by
+    # the agent itself; it needs the binary, not a Claude sign-in.
+    needs_login = not (provider == "claude" and settings.get("llm_base_url"))
+
+    by_provider = {spec.provider: spec for spec in MODEL_CLIS}
+    by_id = {s.id: s for s in states}
+    title = "Your assistant's model CLI is ready"
+    spec = by_provider.get(provider)
+    state = by_id.get(spec.id) if spec else None
+    if state and state.present and (state.logged_in or not needs_login):
+        return Check(id="assistant_model", title=title, ok=True, detail=state.label)
+
+    # The fix that works when the assistant cannot start: register writes
+    # card.json directly, whereas `agent reconfigure` goes through the server
+    # and only reaches card.json once the assistant is running.
+    alternative = pick_provider(states)
+    if alternative is not None:
+        switch = f"clawmeets assistant register --llm-provider {alternative.provider}"
+        if spec is None:
+            detail = f'Your assistant is set to an unknown model provider "{provider}"'
+        else:
+            found = "not signed in" if state and state.present else "not installed"
+            detail = (
+                f"Your assistant uses {spec.label}, which is {found} on this "
+                f"computer. {alternative.label} is ready."
+            )
+        note = f"This switches your assistant to {alternative.label}."
+        if spec and state and state.present:
+            keep = f"`{spec.login_fix}`" if spec.login_fix else spec.login_note
+            note += f" To keep {spec.label} instead: {keep}."
+        return Check(
+            id="assistant_model",
+            title=title,
+            ok=False,
+            detail=detail,
+            fix=switch,
+            fix_note=note,
+        )
+
+    if spec is None:
+        return Check(
+            id="assistant_model",
+            title=title,
+            ok=False,
+            detail=f'Your assistant is set to an unknown model provider "{provider}"',
+            fix="clawmeets assistant register --llm-provider claude",
+            fix_note="Then install and sign in to Claude Code.",
+        )
+    if state and state.present:
+        return Check(
+            id="assistant_model",
+            title=title,
+            ok=False,
+            detail=f"Your assistant uses {spec.label}, which is not signed in",
+            fix=spec.login_fix,
+            fix_note=spec.login_note,
+        )
+    return Check(
+        id="assistant_model",
+        title=title,
+        ok=False,
+        detail=f"Your assistant uses {spec.label}, which is not installed",
+        fix_note=spec.install_note,
+    )
+
+
+def _route_ready(route: dict, states: list[ModelCLIState]) -> Optional[bool]:
+    """Can one smart-routing route run here? True/False for a model CLI, None
+    for anything doctor cannot judge (an in-process route: its key is checked
+    when it is saved, not here)."""
+    provider = str(route.get("provider") or "").lower()
+    if provider.endswith(IN_PROCESS_PROVIDER_SUFFIXES):
+        return None
+    spec = next((m for m in MODEL_CLIS if m.provider == provider), None)
+    if spec is None:
+        return False
+    state = next((s for s in states if s.id == spec.id), None)
+    needs_login = not (provider == "claude" and route.get("base_url"))
+    return bool(state and state.present and (state.logged_in or not needs_login))
+
+
+def _check_smart_assistant(routes: list, states: list[ModelCLIState]) -> Check:
+    """Smart routing tries its routes in order and skips one that cannot run,
+    so the assistant works when ANY route can. With none, the fix is the
+    first route's sign-in, or switching to a CLI that is ready."""
+    title = "Your assistant's model CLI is ready"
+    routes = [r for r in routes if isinstance(r, dict)]
+    verdicts = [_route_ready(r, states) for r in routes]
+    if any(v is not False for v in verdicts) and routes:
+        ready = [str(r.get("name") or r.get("provider"))
+                 for r, v in zip(routes, verdicts) if v is not False]
+        return Check(id="assistant_model", title=title, ok=True,
+                     detail="Smart routing: " + ", ".join(ready))
+    names = ", ".join(str(r.get("provider")) for r in routes) or "no routes"
+    detail = f"Your assistant uses smart routing ({names}), and none of them can run here"
+    alternative = pick_provider(states)
+    if alternative is not None:
+        return Check(
+            id="assistant_model", title=title, ok=False, detail=detail,
+            fix=f"clawmeets assistant register --llm-provider {alternative.provider}",
+            fix_note=f"This switches your assistant to {alternative.label}.",
+        )
+    first = next((m for m in MODEL_CLIS for r in routes if m.provider == r.get("provider")), None)
+    if first is not None:
+        state = next((s for s in states if s.id == first.id), None)
+        if state and state.present:
+            return Check(id="assistant_model", title=title, ok=False, detail=detail,
+                         fix=first.login_fix, fix_note=first.login_note)
+        return Check(id="assistant_model", title=title, ok=False, detail=detail,
+                     fix_note=first.install_note)
+    return Check(
+        id="assistant_model", title=title, ok=False, detail=detail,
+        fix="clawmeets assistant register --llm-provider claude",
+        fix_note="Then install and sign in to Claude Code.",
+    )
+
+
+def check_computer(username: str = "") -> Check:
+    """Is this computer linked, and is its connection running?
+
+    Reads ``~/.clawmeets/computer/<user>/{config.json,computer.pid}`` directly
+    instead of importing ``clawmeets_daemon``: the interesting failure is that
+    the daemon distribution is NOT installed, and an ImportError is a worse way
+    to learn that than a check that says so and names the fix.
+
+    Reports the LOCAL truth only — whether a process is alive here. Whether the
+    SERVER can see it is a different fact, owned by the server and rendered by
+    the web checklist, and a local check that claimed it would be guessing.
+    """
+    username = username or current_username()
+    root = _data_dir() / "computer"
+    account_dir = root / username if username else root
+    config = _read_json(account_dir / "config.json")
+
+    if not config or not config.get("host_id"):
+        detail = (
+            f'This computer is not linked for "{username}"'
+            if username
+            else "This computer is not linked"
+        )
+        return Check(
+            id="computer",
+            title="This computer is linked to your account",
+            ok=False,
+            detail=detail,
+            fix="clawmeets computer install",
+            fix_note=(
+                "Needs the `clawmeets-daemon` package: "
+                "uv tool install --python 3.11 clawmeets-daemon"
+            ),
+        )
+
+    pid_file = account_dir / "computer.pid"
+    pid = 0
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (OSError, ValueError):
+        pid = 0
+    if pid and _pid_alive(pid):
+        return Check(
+            id="computer",
+            title="This computer is linked to your account",
+            ok=True,
+            detail=f"Linked and connected (PID {pid})",
+        )
+    return Check(
+        id="computer",
+        title="This computer is linked to your account",
+        ok=False,
+        detail="Linked, but the connection is not running",
+        fix="clawmeets computer start",
+    )
+
+
+def _pid_alive(pid: int) -> bool:
+    """Does this pid name a live process? Stdlib, cross-platform, never raises."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=PROBE_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return str(pid) in (out.stdout or "")
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Alive, owned by someone else. Still alive.
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def autostart_artifact(username: str = "") -> Optional[Path]:
+    """Where the login entry for ``username`` lives on this platform, or None.
+
+    DUPLICATES the paths in ``clawmeets_daemon/autostart.py`` rather than
+    importing them, for the same reason :func:`check_computer` re-reads
+    ``config.json`` by hand: autostart belongs to the ``clawmeets-daemon``
+    distribution, the runner wheel does not ship it, and a doctor that raised
+    ImportError on a machine where that package is missing would fail exactly
+    where it is most needed. ``tests/test_doctor.py`` asserts these two agree, the
+    same way ``tests/test_host_protocol_parity.py`` guards the other deliberate
+    duplication across this boundary.
+
+    A PATH, not a verdict: whether the entry is also switched on is the daemon's
+    own question, answered by ``clawmeets computer autostart status``.
+    """
+    # A non-default data dir gets a short tag, so the same username in test,
+    # staging and prod each keeps its own login entry.
+    data_dir = _data_dir().resolve()
+    tag = (
+        ""
+        if data_dir == (Path.home() / ".clawmeets").resolve()
+        else hashlib.sha1(str(data_dir).encode()).hexdigest()[:8]
+    )
+    if sys.platform == "darwin":
+        label = f"ai.clawmeets.computer.{username}" if username else "ai.clawmeets.computer"
+        label = f"{label}.{tag}" if tag else label
+        return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    if sys.platform == "linux":
+        unit = f"clawmeets-computer-{username}" if username else "clawmeets-computer"
+        unit = f"{unit}-{tag}" if tag else unit
+        return Path.home() / ".config" / "systemd" / "user" / f"{unit}.service"
+    return None
+
+
+def check_autostart(username: str = "") -> Check:
+    """Will the connection come back by itself after a reboot?
+
+    Non-blocking by design: everything works today without it. It is still
+    checked and still reported, because almost nobody stops their agents on
+    purpose — they reboot — and "my agents went offline overnight" is the single
+    most common way a working setup stops being one.
+
+    "Registered" here means the login entry we write is PRESENT. It deliberately
+    does not re-derive whether the OS also has it switched on: that is the
+    daemon's question, and someone who ran ``systemctl --user disable`` by hand
+    made a decision this check has no business overriding.
+    """
+    username = username or current_username()
+    path = autostart_artifact(username)
+    if path is None:
+        return Check(
+            id="autostart",
+            title="Your agents come back after a restart",
+            ok=True,
+            detail="Not something ClawMeets sets up on this platform",
+            fix_note="Run `clawmeets computer start` after a restart.",
+            blocking=False,
+        )
+    if path.is_file():
+        return Check(
+            id="autostart",
+            title="Your agents come back after a restart",
+            ok=True,
+            detail="Starts when you log in",
+            blocking=False,
+        )
+    return Check(
+        id="autostart",
+        title="Your agents come back after a restart",
+        ok=False,
+        detail="Not set to start when you log in",
+        fix="clawmeets computer autostart enable",
+        blocking=False,
+    )
+
+
+def check_server(server_url: str = "") -> Check:
+    """Can this machine reach the server at all?
+
+    Last in the list and first in usefulness when it fails: every check above it
+    is about local state, and a machine behind a captive portal or a corporate
+    proxy will pass all of them and still never see an agent reply.
+
+    Probes ``GET /``, which is the same liveness check the deployment itself
+    uses (``ops/deploy-prod``: "Health: GET / → 200 (there is no /health
+    route)"). Reusing it rather than inventing ``/health`` keeps one answer to
+    "is this server up?" — and means this check cannot start failing because a
+    route nobody else depends on was never added.
+
+    ``urllib``, not httpx, so it answers even when the dependency stack does not.
+    """
+    url = (server_url or DEFAULT_SERVER).rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{url}/", timeout=PROBE_TIMEOUT_SECONDS) as r:
+            code = r.status
+    except urllib.error.HTTPError as e:
+        # An HTTP error still proves we REACHED a server, which is the question
+        # being asked. A deployment that serves no landing page answers 404 here
+        # and is perfectly healthy, so the status is not reported to the user —
+        # saying "answered 404" under a green check reads as a problem.
+        return Check(
+            id="server",
+            title="ClawMeets is reachable",
+            ok=True,
+            detail=f"{url} (HTTP {e.code})",
+        )
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return Check(
+            id="server",
+            title="ClawMeets is reachable",
+            ok=False,
+            detail=f"Could not reach {url}: {e}",
+            fix="",
+            fix_note=(
+                "Check your network. On a VPN or corporate proxy, allow "
+                f"{url}. Self-hosting? Set CLAWMEETS_SERVER_URL."
+            ),
+        )
+    return Check(
+        id="server",
+        title="ClawMeets is reachable",
+        ok=True,
+        detail=f"{url} (HTTP {code})",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Isolated turns (plan 4.3): is there an OS sandbox?
+# ---------------------------------------------------------------------------
+
+# Provider keys that should live with the model-auth proxy, not in the
+# environment every process on this computer inherits.
+PROVIDER_KEY_ENV = (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY",
+    "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY",
+)
+
+
+ISOLATED_TURNS_TITLE = "Isolated conversations: your computer can safely serve people other than you"
+# Each agent's last start-up check result, written by the runner
+# (runner/turn_capability.ISOLATION_CHECK_FILE; a test keeps the two equal).
+ISOLATION_CHECK_FILE = "isolation-check.json"
+
+
+def _sandbox_works(argv: list[str]) -> bool:
+    try:
+        r = subprocess.run(argv, capture_output=True, timeout=PROBE_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
+def _check_os_sandbox() -> Check:
+    """Is there a working OS sandbox (sandbox-exec on macOS, bubblewrap on Linux)?"""
+    title = ISOLATED_TURNS_TITLE
+    if sys.platform == "darwin":
+        path = "/usr/bin/sandbox-exec"
+        if os.path.exists(path) and _sandbox_works(
+            [path, "-p", "(version 1)(allow default)", "/usr/bin/true"]
+        ):
+            return Check(id="isolated_turns", title=title, ok=True, detail="sandbox-exec works", blocking=False)
+        return Check(
+            id="isolated_turns", title=title, ok=False, blocking=False,
+            detail="sandbox-exec is missing or refused to run",
+            fix_note="macOS ships /usr/bin/sandbox-exec; check that it is present and not blocked by device management.",
+        )
+    if sys.platform.startswith("linux"):
+        bwrap = _which("bwrap")
+        if bwrap and _sandbox_works([
+            bwrap, "--unshare-user", "--unshare-pid", "--unshare-net", "--die-with-parent",
+            "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "true",
+        ]):
+            return Check(id="isolated_turns", title=title, ok=True, detail="bubblewrap works", blocking=False)
+        if not bwrap:
+            return Check(
+                id="isolated_turns", title=title, ok=False, blocking=False,
+                detail="bubblewrap (bwrap) is not installed",
+                fix="sudo apt-get install -y bubblewrap",
+            )
+        return Check(
+            id="isolated_turns", title=title, ok=False, blocking=False,
+            detail="bwrap is installed but cannot create user namespaces",
+            fix="sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
+        )
+    return Check(
+        id="isolated_turns", title=title, ok=False, blocking=False,
+        detail=f"no supported sandbox on {sys.platform}",
+        fix_note="Conversations for other people are held until a macOS or Linux computer with a sandbox connects.",
+    )
+
+
+def _agent_isolation_results(username: str) -> list[tuple[str, dict]]:
+    """``(agent short name, saved canary result)`` for this account's agents."""
+    agents = _data_dir() / "agents"
+    prefix = f"{username}-"
+    out = []
+    for d in sorted(agents.iterdir() if agents.is_dir() and username else []):
+        if not d.is_dir() or not d.name.startswith(prefix):
+            continue
+        result = _read_json(d / ISOLATION_CHECK_FILE)
+        if result is not None:
+            # agents/<user>-<short>-<id>: the id is the last hyphen part.
+            short = d.name[len(prefix):].rsplit("-", 1)[0]
+            out.append((short, result))
+    return out
+
+
+def _first_line(failures: list) -> str:
+    for f in failures:
+        for line in str(f).splitlines():
+            if line.strip():
+                return line.strip()[:200]
+    return "failed"
+
+
+def check_isolated_turns(username: str = "") -> Check:
+    """Can this computer run a conversation for someone other than the owner?
+
+    Those conversations run inside an OS sandbox and are refused, never run
+    unprotected, without one. A working sandbox is not enough: each agent runs
+    one real sandboxed model turn when it starts (its start-up check) and takes
+    such conversations only if that passes, so this reads each agent's last
+    result too. Non-blocking: the owner's own work does not need it.
+    """
+    sandbox = _check_os_sandbox()
+    if not sandbox.ok:
+        return sandbox
+    results = _agent_isolation_results(username or current_username())
+    failed = [(name, r) for name, r in results if not r.get("passed")]
+    if not failed:
+        detail = sandbox.detail + (f"; start-up check passed for {len(results)} agent(s)" if results else "")
+        return Check(id="isolated_turns", title=ISOLATED_TURNS_TITLE, ok=True, detail=detail, blocking=False)
+    detail = "; ".join(
+        f"{name} ({r.get('provider') or '?'}): {_first_line(r.get('failures') or [])}" for name, r in failed
+    )
+    commands = " ".join(f"`clawmeets agent isolation-check {name}`" for name, _ in failed)
+    restart = (f"re-run the check with {commands} (or restart the agent: it runs again at start).")
+    if all(r.get("kind") == "unsupported" for _, r in failed):
+        remedy = "This model provider can't run isolated conversations yet; re-running will not change that."
+    elif any(_is_login_failure(r) for _, r in failed):
+        remedy = f"Sign the model CLI in again on this computer ({_relogin_hint(failed)}), then {restart}"
+    else:
+        remedy = restart[0].upper() + restart[1:]
+    return Check(
+        id="isolated_turns", title=ISOLATED_TURNS_TITLE, ok=False, blocking=False,
+        detail=f"the start-up check failed for {detail}",
+        fix_note=(
+            f"{remedy} The full error is in "
+            f"{ISOLATION_CHECK_FILE} in that agent's folder under {_data_dir() / 'agents'}."
+        ),
+    )
+
+
+# What a provider prints when the login it was handed is refused (expired or
+# revoked OAuth token, bad API key). Matched on the saved failure text.
+_LOGIN_FAILURE_MARKERS = ("(HTTP 401)", "Failed to authenticate", "access token has expired", "Invalid API key")
+
+
+def _is_login_failure(result: dict) -> bool:
+    text = " ".join(str(f) for f in result.get("failures") or [])
+    return any(m in text for m in _LOGIN_FAILURE_MARKERS)
+
+
+def _relogin_hint(failed: list[tuple[str, dict]]) -> str:
+    providers = sorted({r.get("provider") or "" for _, r in failed if _is_login_failure(r)})
+    # A canary's provider is the CLI's id (``codex``, not ``openai``).
+    by_id = {m.id: m for m in MODEL_CLIS}
+    cmds = []
+    for p in providers:
+        m = by_id.get(p)
+        if m and m.login_fix:
+            cmds.append(f"`{m.login_fix}`")
+        elif m and m.login_note:
+            cmds.append(m.login_note[0].lower() + m.login_note[1:])
+        elif p:
+            cmds.append(f"sign {p} in")
+    return " / ".join(cmds) or "sign it in"
+
+
+def check_provider_keys_in_env() -> Check:
+    """Warn when model API keys sit in this computer's ambient environment."""
+    found = [k for k in PROVIDER_KEY_ENV if os.environ.get(k)]
+    title = "Model API keys are not in every program's environment"
+    if not found:
+        return Check(id="provider_keys_env", title=title, ok=True, blocking=False)
+    return Check(
+        id="provider_keys_env", title=title, ok=True, blocking=False,
+        detail="set in the environment: " + ", ".join(found),
+        fix_note="Store them with `clawmeets env set KEY VALUE --agent <name>` instead of exporting them in your shell profile.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# The whole report
+# ---------------------------------------------------------------------------
+
+
+def run_checks(
+    *,
+    server_url: str = "",
+    include_server: bool = True,
+    include_autostart: bool = True,
+    username: str = "",
+) -> Report:
+    """Every check, in the order a user hits them.
+
+    Order is install -> sign-in -> assistant -> model CLI -> the assistant's
+    model CLI -> computer ->
+    autostart -> server, which is the order the install script performs them, so
+    the FIRST failure in the list is also the earliest thing that went wrong.
+    A reader who fixes top-down never fixes something that was only broken
+    because of something above it.
+
+    ``include_server`` / ``include_autostart`` exist for the daemon, which
+    reports this on every check-in: it already knows it reached the server (it
+    is talking to it over a socket) and re-probing on a timer would be a
+    self-answering question on a 30-second loop.
+
+    ``username`` checks that account; empty means the computer's default one.
+    """
+    states = inspect_model_clis()
+    assistant_model = check_assistant_model(states, username)
+    checks: list[Check] = [
+        check_install(),
+        check_session(username),
+        check_assistant(username),
+        *check_model_cli(states),
+        *([assistant_model] if assistant_model else []),
+        check_computer(username),
+    ]
+    checks.append(check_isolated_turns(username))
+    checks.append(check_provider_keys_in_env())
+    if include_autostart:
+        checks.append(check_autostart(username))
+    if include_server:
+        checks.append(check_server(server_url))
+    return Report(checks=checks)
+
+
+def model_cli_wire() -> list[dict]:
+    """The model-CLI findings, in the shape the machine reports to the server.
+
+    Separate from :func:`run_checks` because the daemon sends exactly this and
+    nothing else about model CLIs: the server needs to answer "did we OBSERVE a
+    usable model CLI on that machine?" for the web checklist, and the prose of a
+    fix command is a thing the terminal shows, not a thing the server stores.
+    """
+    return [s.to_dict() for s in inspect_model_clis()]

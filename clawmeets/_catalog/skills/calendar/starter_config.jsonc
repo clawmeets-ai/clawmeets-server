@@ -1,0 +1,25 @@
+{
+  // CalDAV credentials. Defaulted to Fastmail.
+  //
+  // Setup — export CALENDAR_USERNAME and CALENDAR_PASSWORD on the runner,
+  // then point caldav.url at your provider:
+  //
+  //   Fastmail:  https://caldav.fastmail.com/dav/calendars/user/<email>/
+  //              (app password from https://www.fastmail.com/settings/security/devicepw)
+  //   iCloud:    https://caldav.icloud.com
+  //              (app-specific password from https://appleid.apple.com/account/manage)
+  //   Nextcloud: https://<your-host>/remote.php/dav/calendars/<username>/
+  //   Radicale:  http://<your-host>:5232/<username>/
+  //
+  // default_calendars: CalDAV display names (case-insensitive) that
+  // list-events / get / update / delete search — and the first of which
+  // create writes to — when no --calendar-url is passed. Empty ⇒ every
+  // calendar on the account. Run `clawmeets caldav list` to see the names.
+
+  "caldav": {
+    "url": "https://caldav.fastmail.com/dav/calendars/user/me@example.com/",
+    "username": "${CALENDAR_USERNAME}",
+    "password": "${CALENDAR_PASSWORD}"
+  },
+  "default_calendars": ["Personal"]
+}

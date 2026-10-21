@@ -1,0 +1,63 @@
+{
+  // media — generate image / audio / video and save the file to disk. One
+  // section per modality. Every value here is a DEFAULT: a matching CLI flag
+  // (--provider / --model / --api-key / --output-dir / --size / --voice / ...)
+  // overrides it, and an unset api_key falls back to the provider's env var,
+  // so an agent can also run from flags + env with no config at all.
+  //
+  // api_key — inline a literal OR a ${VAR} placeholder resolved from runner
+  //           env. Conventional env vars (set before `clawmeets start`):
+  //             openai      → ${OPENAI_API_KEY}
+  //             gemini /
+  //             nano-banana → ${GEMINI_API_KEY}
+  //             elevenlabs  → ${ELEVENLABS_API_KEY}
+  //             replicate   → ${REPLICATE_API_TOKEN}
+  //             fal         → ${FAL_KEY}
+  // output_dir — absolute path the files land in; ${CLAWMEETS_AGENT_DIR}
+  //              picks the per-agent location. Defaults to
+  //              ${CLAWMEETS_AGENT_DIR}/media/<modality> when omitted.
+
+  "image": {
+    // provider: "openai" (gpt-image-2) | "gemini" (Imagen) | "nano-banana".
+    // Image-to-image editing (--input-image, repeatable) works with openai and
+    // nano-banana only; nano-banana is stronger for background swaps / compositing.
+    "provider": "openai",
+    "api_key": "${OPENAI_API_KEY}",
+    "model": "gpt-image-2",
+    // openai px: 1024x1024 | 1024x1536 | 1536x1024 | 2048x2048 |
+    //            2048x3072 | 3072x2048 (2K) | auto
+    // gemini aspect: 1:1 | 9:16 | 16:9 | 3:4 | 4:3 ; nano-banana ignores size.
+    "default_size": "1024x1024",
+    // openai only: auto | low | medium | high
+    "default_quality": "auto",
+    "output_dir": "${CLAWMEETS_AGENT_DIR}/media/image",
+    "timeout_seconds": 120
+  },
+
+  "audio": {
+    // provider: "openai" (TTS) | "elevenlabs" | "gemini" (TTS).
+    "provider": "openai",
+    "api_key": "${OPENAI_API_KEY}",
+    "model": "gpt-4o-mini-tts",
+    // openai voices: alloy, echo, fable, onyx, nova, shimmer, ...
+    // elevenlabs: a voice_id ; gemini: Kore, Puck, ...
+    "voice": "alloy",
+    // openai output format: mp3 | wav | opus | aac | flac
+    "format": "mp3",
+    "output_dir": "${CLAWMEETS_AGENT_DIR}/media/audio",
+    "timeout_seconds": 120
+  },
+
+  "video": {
+    // provider: "replicate" (owner/name slug, e.g. google/veo-3) | "fal"
+    // (fal-ai/... slug). Both are gateways routing to Veo / Kling / etc.
+    "provider": "replicate",
+    "api_key": "${REPLICATE_API_TOKEN}",
+    // No default model — set the slug here or pass --model per call.
+    "model": "",
+    "output_dir": "${CLAWMEETS_AGENT_DIR}/media/video",
+    // Video runs take minutes; keep under the runner's 1800s kill window.
+    "timeout_seconds": 900,
+    "poll_interval_seconds": 5
+  }
+}

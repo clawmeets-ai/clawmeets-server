@@ -1,0 +1,53 @@
+/* The public account page (public.html). Chats are drawn by the web chat widget.
+   Values lifted from the design handoff; tokens from styles/design/tokens.css. */
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg-canvas);color:var(--ink-1);font-family:var(--font-sans);font-size:14px;line-height:1.45;font-weight:500;-webkit-font-smoothing:antialiased}
+button{font-family:inherit}
+a{color:var(--accent-deep)}a:hover{color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.pc-av{width:36px;height:36px;border-radius:11px;color:#fff;font-weight:800;font-size:15px;display:flex;align-items:center;justify-content:center;flex:none;object-fit:cover}
+.pc-av.xl{width:72px;height:72px;border-radius:20px;font-size:28px}
+.pc-mono{font-family:var(--font-mono);font-size:12px;color:var(--ink-3)}
+.pc-badge{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;border-radius:999px;padding:2px 9px;background:var(--bg-pill-muted);color:var(--ink-2);white-space:nowrap}
+.pc-badge.go{background:var(--prio-quick-bg);color:var(--prio-quick-fg)}
+.pc-badge i{width:7px;height:7px;border-radius:50%;background:currentColor}
+.pc-btn{border:1px solid var(--line-2);background:#fff;color:var(--ink-1);font-weight:700;font-size:13px;border-radius:9px;padding:7px 13px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;text-decoration:none;white-space:nowrap}
+.pc-btn:hover{border-color:var(--line-strong);color:var(--ink-1)}
+.pc-btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}.pc-btn.pri:hover{background:var(--accent-deep);color:#fff}
+.pc-foot{text-align:center;font-size:11.5px;color:var(--ink-3);padding:6px 0 12px}.pc-foot a{color:var(--ink-2);font-weight:700;text-decoration:none}
+.pc-unavailable{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px}
+.pc-unavailable p{margin:0;font-size:15px;color:var(--ink-2)}
+
+/* account */
+.pa2-page{max-width:1000px;margin:0 auto;padding:44px 28px 30px}
+.pa2-prof{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.pa2-prof .info{flex:1;min-width:260px}
+.pa2-prof h1{font-size:28px;font-weight:800;letter-spacing:-.02em;margin:0}
+.pa2-handle{margin-top:3px}
+.pa2-prof p{margin:8px 0 0;font-size:14.5px;color:var(--ink-2);line-height:1.55;max-width:600px}
+.pa2-meta{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:13px;color:var(--ink-3)}
+.pa2-bar{display:flex;gap:10px;align-items:center;margin:32px 0 6px;flex-wrap:wrap}
+.pa2-search{flex:1;min-width:220px;display:flex;align-items:center;gap:8px;border:1px solid var(--line-2);background:#fff;border-radius:10px;padding:0 12px;color:var(--ink-3)}
+.pa2-search:focus-within{border-color:var(--accent)}
+.pa2-search input{flex:1;border:0;outline:0;font:inherit;font-size:14px;padding:9px 0;background:transparent;color:var(--ink-1)}
+.pa2-search input:focus-visible{outline:0}
+.pa2-tabs{display:flex;gap:4px;background:var(--bg-pill-muted);border-radius:10px;padding:3px}
+.pa2-tabs button{border:0;background:transparent;font-size:13px;font-weight:700;color:var(--ink-2);padding:6px 11px;border-radius:8px;cursor:pointer}.pa2-tabs button.on{background:#fff;color:var(--ink-1);box-shadow:var(--shadow-1)}
+.pa2-team{margin-top:28px}
+.pa2-team h2{font-size:16px;font-weight:800;margin:0 0 12px}
+.pa2-team h2:has(+ .d){margin-bottom:0}
+.pa2-team .d{font-size:13px;color:var(--ink-3);margin:2px 0 12px}
+.pa2-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px}
+.pa2-card{border:1px solid var(--line-2);background:#fff;border-radius:var(--r-lg);padding:16px;display:flex;flex-direction:column;gap:10px;text-decoration:none;color:inherit;transition:border-color .15s,box-shadow .15s}
+.pa2-card:hover{border-color:var(--accent-soft);box-shadow:var(--shadow-2);color:inherit}
+.pa2-card .top{display:flex;gap:12px;align-items:center}
+.pa2-card .top .t{flex:1;min-width:0}.pa2-card b{display:block;font-size:15px;font-weight:800}
+.pa2-card .desc{font-size:13.5px;color:var(--ink-2);line-height:1.5;margin:0;flex:1;text-wrap:pretty}
+.pa2-sk{font-size:12px;color:var(--ink-3)}
+.pa2-cf{display:flex;justify-content:space-between;align-items:center;gap:8px;border-top:1px solid var(--line-1);padding-top:10px;margin-top:auto}
+.pa2-cf .go{font-size:13px;font-weight:800;color:var(--accent-deep);display:inline-flex;gap:5px;align-items:center}
+.pa2-empty{padding:40px;text-align:center;color:var(--ink-3);font-size:14px}
+
+@media (max-width:600px){.pa2-page{padding:28px 16px}}
