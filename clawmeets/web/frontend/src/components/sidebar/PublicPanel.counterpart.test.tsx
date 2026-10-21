@@ -39,6 +39,8 @@ let agents: AgentCard[] = []
 let projects: Project[] = []
 vi.mock('../../hooks/useAgents', () => ({ useAgents: () => ({ data: agents, isLoading: false }) }))
 vi.mock('../../hooks/useProjects', () => ({ useUserProjects: () => ({ data: projects, isLoading: false }) }))
+vi.mock('../../hooks/usePublicRequests', () => ({ usePublicRequests: () => ({ data: [] }) }))
+vi.mock('../../hooks/useAgentAccess', () => ({ useRetainedAgents: () => ({ data: [] }) }))
 
 beforeEach(() => {
   seedSessions([makeSession({ id: ME, username: 'carol' })], ME)

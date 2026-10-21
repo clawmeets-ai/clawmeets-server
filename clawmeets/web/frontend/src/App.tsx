@@ -28,6 +28,7 @@ import ScheduledMessagesPage from './components/scheduled/ScheduledMessagesList'
 import CreateAgentPage from './components/agent/CreateAgentPage'
 import DeskPage from './components/desk/DeskPage'
 import ComputerPage from './components/computer/ComputerPage'
+import PublicRequestsPage from './components/publicRequests/PublicRequestsPage'
 import BriefingPage from './components/briefing/BriefingPage'
 import ContextLanding from './components/context/ContextLanding'
 
@@ -182,6 +183,8 @@ function AuthenticatedApp() {
           <Route path="settings" element={<UserSettingsPage />} />
           <Route path="settings/front-desk" element={<FrontDeskSettingsPage />} />
           <Route path="agents/public" element={<AgentDirectoryPage />} />
+          <Route path="requests" element={<PublicRequestsPage />} />
+          <Route path="requests/:requestId" element={<PublicRequestsPage />} />
           <Route path="agents/new" element={<CreateAgentPage />} />
           <Route path="agents/:agentId/settings" element={<AgentSettingsPage />} />
           {/* The bare path renders the first computer (or the empty state) —

@@ -107,6 +107,7 @@ from .routes.search import create_search_router
 from .routes.channels import create_channels_router
 from .routes.hub import create_hub_router, hub_error_response
 from .routes.hub_channels import create_hub_channels_router
+from .routes.public_requests import create_public_requests_router
 from .hub.browser import HubError
 from .routes.webchat import create_webchat_router
 from .channels.adapter import ChannelAdapter
@@ -555,6 +556,7 @@ def create_app(
     app.include_router(create_channels_router(ctx))
     app.include_router(create_hub_router(ctx))
     app.include_router(create_hub_channels_router(ctx))
+    app.include_router(create_public_requests_router(ctx))
     app.add_exception_handler(HubError, hub_error_response)
 
     async def foreign_coordinator_response(_request, exc):

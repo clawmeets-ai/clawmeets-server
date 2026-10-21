@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
-import { Link, useNavigate, useMatch } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useMatch } from 'react-router-dom'
+import { Plus } from 'lucide-react'
 import { useAuthStore } from '../../stores/authStore'
 import { confirmLeaveIfDirty } from '../../stores/unsavedGuard'
 import { useAgents } from '../../hooks/useAgents'
@@ -9,10 +10,16 @@ import { isFrontDeskProject, parseFrontDeskName, type AgentCard } from '../../ty
 import { shortName } from '../../utils/agentDisplay'
 import { groupHubThreads, hubThreadPath, REMOTE_TEXT_CAP, safeRemoteText } from '../../utils/hubDisplay'
 import type { HubTarget } from '../../api/endpoints/hub'
+import { useRetainedAgents } from '../../hooks/useAgentAccess'
+import { usePublicRequests } from '../../hooks/usePublicRequests'
+import { AGENT_PARAM, fromRetained, requestPath, REQUESTS_PATH } from '../publicRequests/agentView'
+import { COPY } from '../publicRequests/requestCopy'
 import UnusualNameChip from '../hub/UnusualNameChip'
 import PanelShell from './PanelShell'
 import AgentRow from './AgentRow'
 import SidebarAvatar from './SidebarAvatar'
+
+const SECTION = 'px-3 pt-3 pb-1 text-[10.5px] font-extrabold uppercase tracking-[0.08em] text-ink-3'
 
 interface OwnerBucket {
   owner: string
@@ -39,7 +46,9 @@ export function hubRowChip(t: HubTarget): string | null {
   }
 }
 
-// Public context: agents you've DMed that belong to OTHER users. Each lives in a
+// Public context. On top: "New request", the user's public requests, and the
+// agents they retained (a click opens the agent drawer on the requests page).
+// Below, under "Conversations": agents you've DMed that belong to OTHER users. Each lives in a
 // per-agent FD project `{username}-fd-{short}` whose coordinator IS the foreign
 // agent; grouped by that agent's owner. Revived from the old AgentList.
 //
@@ -55,8 +64,18 @@ export default function PublicPanel({ onNavigate }: { onNavigate?: () => void })
   const activeHubThread = hubMatch?.params.threadId ?? null
   const activeAgentName = dmMatch?.params.agentName ? decodeURIComponent(dmMatch.params.agentName) : null
 
+  const location = useLocation()
+  const requestMatch = useMatch(`${REQUESTS_PATH}/:requestId`)
+  const activeRequest = requestMatch?.params.requestId ?? null
+
   const { data: allAgents } = useAgents()
   const { data: projects } = useUserProjects()
+  const { data: requests } = usePublicRequests()
+  const { data: retainedRows } = useRetainedAgents()
+  const retained = useMemo(
+    () => (retainedRows ?? []).filter((r) => r.state === 'active').map(fromRetained),
+    [retainedRows],
+  )
 
   const buckets: OwnerBucket[] = useMemo(() => {
     if (!user || !projects || !allAgents) return []
@@ -109,6 +128,18 @@ export default function PublicPanel({ onNavigate }: { onNavigate?: () => void })
     onNavigate?.()
   }
 
+  const go = (to: string) => {
+    if (!confirmLeaveIfDirty()) return
+    navigate(to)
+    onNavigate?.()
+  }
+
+  // The drawer opens over whatever requests page is showing, else over the ask page.
+  const openRetained = (ref: string) => {
+    const base = location.pathname.startsWith(REQUESTS_PATH) ? location.pathname : REQUESTS_PATH
+    go(`${base}?${AGENT_PARAM}=${encodeURIComponent(ref)}`)
+  }
+
   const selectHubThread = (t: HubTarget, projectId: string) => {
     if (!confirmLeaveIfDirty()) return
     navigate(hubThreadPath(t.hub_agent_id, projectId))
@@ -118,6 +149,58 @@ export default function PublicPanel({ onNavigate }: { onNavigate?: () => void })
   return (
     <PanelShell title="Public agents" addTo="/agents/public" addLabel="Browse public agents" onNavigate={onNavigate}>
       <div className="px-1.5 pt-1 space-y-1">
+        <button
+          type="button"
+          onClick={() => go(REQUESTS_PATH)}
+          className="flex items-center gap-2 w-[calc(100%-1rem)] mx-2 mb-1 px-3 py-2 rounded-lg text-[13px] font-bold text-white bg-accent hover:bg-accent-deep transition-colors"
+          data-testid="new-request"
+        >
+          <Plus className="w-4 h-4" />
+          {COPY.sidebar.newRequest}
+        </button>
+
+        <div className={SECTION}>{COPY.sidebar.requests}</div>
+        {requests?.length ? requests.map((r) => {
+          const selected = activeRequest === r.id
+          return (
+            <button
+              key={r.id}
+              type="button"
+              onClick={() => go(requestPath(r.id))}
+              className={`block w-full text-left px-3 py-1.5 rounded hover:bg-sidebar-hover transition-colors ${
+                selected ? 'bg-sidebar-active text-sidebar-text-active' : 'text-sidebar-text'
+              }`}
+              aria-current={selected ? 'page' : undefined}
+              data-testid="request-row"
+            >
+              <span className={`block text-[13px] leading-snug line-clamp-2 ${selected ? 'font-bold' : 'font-semibold'}`}>{r.text}</span>
+              <span className="block text-[11.5px] text-ink-3">{COPY.sidebar.requestMeta(r.responded, r.matched)}</span>
+            </button>
+          )
+        }) : (
+          <div className="px-3 py-1 text-sidebar-text text-xs opacity-75">{COPY.sidebar.requestsEmpty}</div>
+        )}
+
+        <div className={SECTION}>{COPY.sidebar.retained}</div>
+        {retained.length ? retained.map((a) => (
+          <button
+            key={a.agent_ref}
+            type="button"
+            onClick={() => openRetained(a.agent_ref)}
+            className="flex items-center gap-2 w-full text-left pl-3 pr-4 py-1 rounded text-sidebar-text hover:bg-sidebar-hover transition-colors"
+            data-testid="retained-row"
+          >
+            <SidebarAvatar name={a.display_name} size={21} ringColor="var(--bg-sidebar)" />
+            <span className="min-w-0">
+              <bdi className="block truncate text-[13px] font-semibold">{a.display_name}</bdi>
+              <span className="block truncate text-[11.5px] text-ink-3">{COPY.sidebar.retainedMeta}</span>
+            </span>
+          </button>
+        )) : (
+          <div className="px-3 py-1 text-sidebar-text text-xs opacity-75">{COPY.sidebar.retainedEmpty}</div>
+        )}
+
+        <div className={SECTION}>{COPY.sidebar.conversations}</div>
         {buckets.length === 0 && hubBuckets.length === 0 && (
           <div className="px-3 py-2 text-sidebar-text text-xs opacity-75">No public agents DMed yet</div>
         )}

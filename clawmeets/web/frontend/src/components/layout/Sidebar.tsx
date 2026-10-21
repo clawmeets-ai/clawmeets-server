@@ -54,7 +54,9 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
       // empty state) inside ComputerPage, so it skips the /c/<ctx> landing for
       // the same reason Desk and Sched do.
       if (id === 'computers') return navigate('/computers')
-      navigate(`/c/${id}`) // agents | dms | projects | frontdesk | public
+      // Public opens the public-requests ask page, which is its landing.
+      if (id === 'public') return navigate('/requests')
+      navigate(`/c/${id}`) // agents | dms | projects | frontdesk
     },
     [railContext, location.pathname, navigate, setRailContext],
   )

@@ -9,6 +9,7 @@ import { useUnreadStore } from '../stores/unreadStore'
 import { useRunnerVersionStore } from '../stores/runnerVersionStore'
 import { useDeskLabelViewStore } from '../stores/deskLabelViewStore'
 import { DESK_LATEST_MESSAGES_KEY, deskRoomKey } from './useDeskUpdates'
+import { PUBLIC_REQUESTS_KEY } from './usePublicRequests'
 import { ControlMessageType } from '../types'
 import type { ActiveWorkChangePayload, AgentCardUpdatePayload, ChangelogUpdatePayload, ControlEnvelope, DeskLabelSyncPayload, DeskReadStateSyncPayload, McpAuthUrlForUserPayload, SkillAuthUrlForUserPayload } from '../types'
 import { CHANNEL_THREADS_KEY } from './useChannelThreads'
@@ -98,6 +99,12 @@ export function useWebSocketUpdates() {
             // cancelling and restarting it on every entry.
             queryClient.invalidateQueries(
               { queryKey: [DESK_LATEST_MESSAGES_KEY] },
+              { cancelRefetch: false },
+            )
+            // A public request's matches each answer on their own thread, so
+            // any thread's update may move a request's status.
+            queryClient.invalidateQueries(
+              { queryKey: PUBLIC_REQUESTS_KEY },
               { cancelRefetch: false },
             )
             queryClient.invalidateQueries({

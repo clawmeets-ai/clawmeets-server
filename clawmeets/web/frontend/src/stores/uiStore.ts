@@ -17,6 +17,7 @@ export function railContextFromPath(pathname: string): RailContext | null {
   // panel-less welcome variant to carve out: '/computers' with no id redirects
   // to the first machine (or renders the empty state) inside the same context.
   if (pathname.startsWith('/computers')) return 'computers'
+  if (pathname === '/requests' || pathname.startsWith('/requests/')) return 'public' // public requests
   if (/^\/projects\/.+/.test(pathname)) return 'projects' // /projects/:id, /chatrooms/..., /projects/new
   if (pathname === '/projects' || pathname === '/projects/') return 'welcome' // bare welcome page
   if (pathname.startsWith('/c/')) return pathname.slice(3).split('/')[0] as RailContext // /c/<ctx> landing

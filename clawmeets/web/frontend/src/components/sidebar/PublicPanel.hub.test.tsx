@@ -18,6 +18,8 @@ let agents: AgentCard[] = []
 let projects: Project[] = []
 vi.mock('../../hooks/useAgents', () => ({ useAgents: () => ({ data: agents }) }))
 vi.mock('../../hooks/useProjects', () => ({ useUserProjects: () => ({ data: projects }) }))
+vi.mock('../../hooks/usePublicRequests', () => ({ usePublicRequests: () => ({ data: [] }) }))
+vi.mock('../../hooks/useAgentAccess', () => ({ useRetainedAgents: () => ({ data: [] }) }))
 
 function Where() {
   return <div data-testid="where">{useLocation().pathname}</div>
