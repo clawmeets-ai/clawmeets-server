@@ -711,8 +711,12 @@ class ChannelGateway:
             except (asyncio.CancelledError, Exception):
                 pass
             self._worker_task = None
-        for task in list(self._tasks):
+        # Await the cancelled flushes: a restart that boots a new gateway while
+        # the old one's flushes still run delivers the same rows twice.
+        tasks = list(self._tasks)
+        for task in tasks:
             task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
 
     async def drain(self) -> None:
