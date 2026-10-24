@@ -26,9 +26,17 @@ Variables (see deploy/clawmeets.env.example for the operator-facing comments):
   under it. Must be https (plain http allowed only for localhost).
 - ``CLAWMEETS_INBOUND_EMAIL_DOMAIN`` receiving domain for agent addresses;
   defaults to ``agents.clawmeets.ai``.
+- ``CLAWMEETS_EMAIL_PROVIDER``       ``sendgrid`` (default) | ``mailgun``: who
+  carries agent email both ways (the app's own mail reads the same variable,
+  ``utils/email.get_mailer``). Only the chosen provider's variables are read:
 - ``SENDGRID_INBOUND_SECRET``        shared secret on the Inbound Parse URL.
 - ``SENDGRID_API_KEY``               existing outbound SendGrid key; channel
   email replies are sent with it.
+- ``MAILGUN_AGENTS_API_KEY``         a Mailgun sending key for the inbound
+  domain; channel email replies are sent with it.
+- ``MAILGUN_WEBHOOK_SIGNING_KEY``    checks the signature on every inbound POST.
+- ``MAILGUN_API_BASE``               ``https://api.mailgun.net`` (default) or the
+  EU region's ``https://api.eu.mailgun.net``.
 
 Also installs the webhook query-string redaction on uvicorn's access log (see
 ``log_redaction.py``) — enabled or not, so a probe of the webhook paths can't
@@ -97,6 +105,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_INBOUND_EMAIL_DOMAIN = "agents.clawmeets.ai"
 MIN_INBOUND_SECRET_LENGTH = 32
+EMAIL_PROVIDERS = ("sendgrid", "mailgun")
+DEFAULT_MAILGUN_API_BASE = "https://api.mailgun.net"
 
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"", "0", "false", "no", "off"}
@@ -188,6 +198,11 @@ class ChannelConfig:
     secret_keys: tuple[str, ...]
     sendgrid_inbound_secret: str
     sendgrid_api_key: str
+    #: ``sendgrid`` | ``mailgun``: whose webhook route and send API are live.
+    email_provider: str = "sendgrid"
+    mailgun_agents_api_key: str = ""
+    mailgun_webhook_signing_key: str = ""
+    mailgun_api_base: str = DEFAULT_MAILGUN_API_BASE
     #: The hub settings this server booted with (``HUB_OFF`` unless set).
     hub: HubConfig = HUB_OFF
     #: False on a hub-only gateway: no provider adapter, and every provider,
@@ -198,6 +213,7 @@ class ChannelConfig:
         return (
             f"ChannelConfig(server_url={self.server_url!r}, "
             f"inbound_email_domain={self.inbound_email_domain!r}, "
+            f"email_provider={self.email_provider!r}, "
             f"key_count={self.key_count}, hub_mode={self.hub.mode!r}, "
             f"providers_enabled={self.providers_enabled}, secrets=<redacted>)"
         )
@@ -321,15 +337,31 @@ def _load(env: Mapping[str, str]) -> Optional[ChannelConfig]:
     fernets = _check_secret_keys(env.get("CLAWMEETS_CHANNEL_SECRET_KEY", ""), problems)
     domain = _check_email_domain(env.get("CLAWMEETS_INBOUND_EMAIL_DOMAIN", ""), problems)
 
-    inbound_secret = env.get("SENDGRID_INBOUND_SECRET", "").strip()
-    if len(inbound_secret) < MIN_INBOUND_SECRET_LENGTH:
-        problems.append(
-            f"SENDGRID_INBOUND_SECRET is missing or shorter than "
-            f"{MIN_INBOUND_SECRET_LENGTH} characters"
-        )
-    api_key = env.get("SENDGRID_API_KEY", "").strip()
-    if not api_key.startswith("SG."):
-        problems.append("SENDGRID_API_KEY is missing or not a SendGrid key (SG....)")
+    provider = env.get("CLAWMEETS_EMAIL_PROVIDER", "").strip().lower() or "sendgrid"
+    inbound_secret = api_key = mailgun_key = mailgun_signing = ""
+    mailgun_base = DEFAULT_MAILGUN_API_BASE
+    if provider not in EMAIL_PROVIDERS:
+        problems.append("CLAWMEETS_EMAIL_PROVIDER is not one of: " + ", ".join(EMAIL_PROVIDERS))
+    elif provider == "sendgrid":
+        inbound_secret = env.get("SENDGRID_INBOUND_SECRET", "").strip()
+        if len(inbound_secret) < MIN_INBOUND_SECRET_LENGTH:
+            problems.append(
+                f"SENDGRID_INBOUND_SECRET is missing or shorter than "
+                f"{MIN_INBOUND_SECRET_LENGTH} characters"
+            )
+        api_key = env.get("SENDGRID_API_KEY", "").strip()
+        if not api_key.startswith("SG."):
+            problems.append("SENDGRID_API_KEY is missing or not a SendGrid key (SG....)")
+    else:
+        mailgun_key = env.get("MAILGUN_AGENTS_API_KEY", "").strip()
+        if not mailgun_key:
+            problems.append("MAILGUN_AGENTS_API_KEY is not set")
+        mailgun_signing = env.get("MAILGUN_WEBHOOK_SIGNING_KEY", "").strip()
+        if len(mailgun_signing) < 16:
+            problems.append("MAILGUN_WEBHOOK_SIGNING_KEY is missing or shorter than 16 characters")
+        mailgun_base = (env.get("MAILGUN_API_BASE", "").strip() or DEFAULT_MAILGUN_API_BASE).rstrip("/")
+        if not mailgun_base.startswith("https://"):
+            problems.append("MAILGUN_API_BASE must be an https URL")
 
     if problems:
         logger.error(
@@ -348,12 +380,17 @@ def _load(env: Mapping[str, str]) -> Optional[ChannelConfig]:
         secret_keys=tuple(_split_keys(env.get("CLAWMEETS_CHANNEL_SECRET_KEY", ""))),
         sendgrid_inbound_secret=inbound_secret,
         sendgrid_api_key=api_key,
+        email_provider=provider,
+        mailgun_agents_api_key=mailgun_key,
+        mailgun_webhook_signing_key=mailgun_signing,
+        mailgun_api_base=mailgun_base,
     )
     logger.info(
-        "Channel gateway ON: webhooks under %s%s/, inbound email @%s, %d secret key(s)",
+        "Channel gateway ON: webhooks under %s%s/, inbound email @%s via %s, %d secret key(s)",
         server_url,
         WEBHOOK_PATH_PREFIX,
         domain,
+        provider,
         config.key_count,
     )
     return config

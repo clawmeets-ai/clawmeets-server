@@ -202,6 +202,8 @@ from .store import (
 if TYPE_CHECKING:
     from clawmeets.server.context import ServerContext
 
+    from .email_mail import InboundMail
+
 logger = logging.getLogger(__name__)
 
 UC = "user-communication"
@@ -1159,10 +1161,9 @@ class ChannelGateway:
         (``ChannelStore.note_automatic_dropped``). A dropped mail of any kind
         moves "last mail received" and writes no threading state.
         """
-        from .email_mail import MailUnreadable, event_id, read_mail, thread_key
+        from .email_mail import MailUnreadable, read_mail
 
-        adapter = self.adapters.get(EMAIL_CHANNEL)
-        if adapter is None:
+        if self.adapters.get(EMAIL_CHANNEL) is None:
             return 404
         try:
             mail = read_mail(form)
@@ -1172,6 +1173,36 @@ class ChannelGateway:
         except Exception as exc:  # noqa: BLE001 — the body is the contact's text
             logger.error("Channel email: dropped an Inbound Parse POST: %s", type(exc).__name__)
             return 200
+        return await self.handle_mail(mail)
+
+    async def handle_mailgun(self, form: InboundForm) -> int:
+        """One Mailgun ``forward(".../mime")`` POST whose signature the route
+        has checked: the raw message read (and its DKIM signatures verified,
+        ``email_mailgun``), then the same path as :meth:`handle_email`."""
+        from .email_mail import MailUnreadable
+        from .email_mailgun import read_mailgun_mail
+
+        adapter = self.adapters.get(EMAIL_CHANNEL)
+        if adapter is None:
+            return 404
+        try:
+            mail = await read_mailgun_mail(form, dnsfunc=getattr(adapter, "dkim_dnsfunc", None))
+        except MailUnreadable:
+            logger.error("Channel email: dropped a Mailgun POST: MailUnreadable")
+            return 200
+        except Exception as exc:  # noqa: BLE001 — the body is the contact's text
+            logger.error("Channel email: dropped a Mailgun POST: %s", type(exc).__name__)
+            return 200
+        return await self.handle_mail(mail)
+
+    async def handle_mail(self, mail: "InboundMail") -> int:
+        """One inbound mail, read by either provider's reader. The rules are
+        :meth:`handle_email`'s."""
+        from .email_mail import event_id, thread_key
+
+        adapter = self.adapters.get(EMAIL_CHANNEL)
+        if adapter is None:
+            return 404
         domain = self.config.inbound_email_domain
         if mail.from_address is not None and _at_domain(mail.from_address, domain):
             logger.info("Channel email: dropped mail from one of our own addresses")

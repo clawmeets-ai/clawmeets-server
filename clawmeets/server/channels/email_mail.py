@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: BUSL-1.1
 """
 clawmeets/server/channels/email_mail.py
-One SendGrid Inbound Parse POST (parsed mode) read into an :class:`InboundMail`.
+One SendGrid Inbound Parse POST (parsed mode) read into an :class:`InboundMail`
+— or, through ``read_raw_mail``, one raw message (Mailgun's ``body-mime``),
+read by the same rules except where noted there.
 
 **Who sent it** (``from_address``): the ``From:`` header's addr-spec, through
 ``email_address.normalize_address``. Read from SendGrid's ``headers`` field
@@ -46,6 +48,7 @@ encoded words where SendGrid left them encoded.
 from __future__ import annotations
 
 import codecs
+import email.parser
 import email.policy
 import hashlib
 import json
@@ -346,3 +349,79 @@ def thread_key(user_key: str, root: str) -> str:
     sender, so two senders can never share one (a forger who reuses a real
     Message-ID as their own starts their own thread)."""
     return "et-" + hashlib.sha256(f"{user_key}\0{root}".encode("utf-8")).hexdigest()[:40]
+
+
+def read_raw_mail(
+    raw: bytes, *, envelope_from: str, recipients: list[str], dkim_domains: list[str],
+    truncated: bool = False,
+) -> InboundMail:
+    """One raw RFC 5322 message (Mailgun's ``body-mime``) read the same way as
+    a parsed-mode POST. The envelope comes from the caller (the provider's SMTP
+    transcript, never the ``To:`` header) and so do the domains whose DKIM
+    signatures verified: the verdict is an aligned DKIM pass and nothing else —
+    no SPF result is trusted, because no provider here reports it for the
+    envelope domain alone. Raises :class:`MailUnreadable` without a ``From:``."""
+    headers = email.parser.BytesParser(policy=email.policy.compat32).parsebytes(
+        raw, headersonly=True,
+    )
+    from_address, from_ok, display_name = _from_header(headers, None)
+    if from_address is None and not headers.get_all("from"):
+        raise MailUnreadable()
+    subject = decode_words(_header(headers, "subject")).strip()
+    plain, html, lines = _mime_parts(raw)
+    body = new_text(plain, html)
+    text = cap_text("\n".join(([body] if body else []) + lines) or EMPTY_MESSAGE)
+    if truncated and not text.endswith(TRUNCATED_MARKER):
+        room = MAX_AGENT_TEXT_BYTES - len(TRUNCATED_MARKER.encode("utf-8"))
+        text = cap_text(text, room).removesuffix(TRUNCATED_MARKER) + TRUNCATED_MARKER
+    message_ids = id_list(_header(headers, "message-id"))
+    verified = from_ok and from_address is not None and any(
+        aligned(split_address(from_address)[1], d) for d in dkim_domains
+    )
+    return InboundMail(
+        from_address=from_address,
+        from_ok=from_ok,
+        display_name=display_name,
+        envelope_from=envelope_from,
+        recipients=recipients,
+        subject=subject,
+        message_id=message_ids[0] if message_ids else None,
+        in_reply_to=id_list(_header(headers, "in-reply-to")),
+        references=id_list(_header(headers, "references")),
+        date=_header(headers, "date"),
+        text=text,
+        automatic_reason=automatic_reason(headers, from_address, envelope_from),
+        auth_verdict=access.AUTH_PASS if verified else access.AUTH_FAIL,
+        dkim_domains=list(dkim_domains),
+    )
+
+
+def _mime_parts(raw: bytes) -> tuple[Optional[str], Optional[str], list[str]]:
+    """(text/plain body, text/html body, one placeholder line per attachment).
+    A part that will not decode is skipped, never fatal: the sender's other
+    parts still arrive."""
+    try:
+        message = email.parser.BytesParser(policy=email.policy.default).parsebytes(raw)
+    except Exception:  # noqa: BLE001 — a broken body still has its headers
+        return None, None, []
+    texts: dict[str, Optional[str]] = {}
+    for kind in ("plain", "html"):
+        try:
+            part = message.get_body(preferencelist=(kind,))
+            texts[kind] = part.get_content() if part is not None else None
+        except Exception:  # noqa: BLE001 — undecodable part
+            texts[kind] = None
+    lines = []
+    try:
+        attachments = list(message.iter_attachments())
+    except Exception:  # noqa: BLE001 — not multipart, or broken framing
+        attachments = []
+    for part in attachments:
+        try:
+            size = len(part.get_payload(decode=True) or b"")
+        except Exception:  # noqa: BLE001
+            size = 0
+        lines.append(attachment_line(
+            decode_words(part.get_filename() or ""), part.get_content_type() or "", size,
+        ))
+    return texts.get("plain"), texts.get("html"), lines

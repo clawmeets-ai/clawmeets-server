@@ -18,6 +18,11 @@ nothing is recorded.
   declared, so a missing one can never produce a 422 that echoes the request.
 - ``GET /api/channels/webhooks/file?t=<token>`` — a file the agent shared
   with an outside contact, behind its signed link (``channels/file_links``).
+- ``POST /api/channels/webhooks/email/mailgun/mime`` — the same mail from a
+  Mailgun route when ``CLAWMEETS_EMAIL_PROVIDER=mailgun`` (each provider's URL
+  is 404 while the other is chosen): kill switch (404) → ``Content-Length``
+  (413) → the body, streamed and counted (413) → Mailgun's signature in it
+  (401: ``email_mailgun.check_signature``) → recipients, as below.
 - ``POST /api/channels/webhooks/email`` — SendGrid Inbound Parse, one URL for
   the server. Checked in this order: kill switch (404) → the basic-auth secret
   (401, before a byte of the body is read) → ``Content-Length`` over the email
@@ -74,6 +79,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING, Optional
 from urllib.parse import parse_qsl, quote
 
@@ -94,6 +100,7 @@ from clawmeets.server.channels.gateway import (
     connection_status,
     provider_gateway,
 )
+from clawmeets.server.channels import email_mailgun
 from clawmeets.server.channels.email_adapter import check_basic_auth
 from clawmeets.server.channels.email_form import (
     MAX_EMAIL_BODY_BYTES,
@@ -101,6 +108,7 @@ from clawmeets.server.channels.email_form import (
     FormLimit,
     FormTooLarge,
     read_inbound_form,
+    read_urlencoded_form,
 )
 from clawmeets.server.channels.log_redaction import WEBHOOK_PATH_PREFIX
 from clawmeets.server.hub.browser import HubError
@@ -526,7 +534,7 @@ def create_channels_router(ctx: "ServerContext") -> APIRouter:
     @router.post(WEBHOOK_PATH_PREFIX + "/email", include_in_schema=False)
     async def email_webhook(request: Request):
         gateway = _gateway()  # before the body is read
-        if "email" not in gateway.adapters:
+        if "email" not in gateway.adapters or gateway.config.email_provider != "sendgrid":
             return _webhook_answer(404)
         if not check_basic_auth(
             request.headers.get("authorization"), gateway.config.sendgrid_inbound_secret,
@@ -544,6 +552,39 @@ def create_channels_router(ctx: "ServerContext") -> APIRouter:
             logger.error("Channel email: dropped an Inbound Parse POST: %s", type(exc).__name__)
             return _webhook_answer(200)
         status = await gateway.handle_email(form)
+        return _webhook_answer(status)
+
+    @router.post(WEBHOOK_PATH_PREFIX + email_mailgun.WEBHOOK_PATH, include_in_schema=False)
+    async def mailgun_email_webhook(request: Request):
+        """Mailgun's route, ``forward(".../mime")``. Its signature is in the
+        body, so the body is read first, under the same caps as SendGrid's."""
+        gateway = _gateway()
+        if "email" not in gateway.adapters or gateway.config.email_provider != "mailgun":
+            return _webhook_answer(404)
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_EMAIL_BODY_BYTES:
+            return _webhook_answer(413)
+        content_type = request.headers.get("content-type", "")
+        try:
+            if content_type.startswith("application/x-www-form-urlencoded"):
+                form = await read_urlencoded_form(
+                    request.stream(), field_limits=email_mailgun.MAILGUN_FIELD_LIMITS,
+                )
+            else:
+                form = await read_inbound_form(
+                    content_type, request.stream(),
+                    field_limits=email_mailgun.MAILGUN_FIELD_LIMITS,
+                )
+        except FormTooLarge:
+            return _webhook_answer(413)
+        except (FormInvalid, FormLimit) as exc:
+            logger.error("Channel email: dropped a Mailgun POST: %s", type(exc).__name__)
+            return _webhook_answer(200)
+        if not email_mailgun.check_signature(
+            form, gateway.config.mailgun_webhook_signing_key, now=time.time(),
+        ):
+            return _webhook_answer(401)
+        status = await gateway.handle_mailgun(form)
         return _webhook_answer(status)
 
     @router.post(WEBHOOK_PATH_PREFIX + "/{channel}/{connection_id}", include_in_schema=False)

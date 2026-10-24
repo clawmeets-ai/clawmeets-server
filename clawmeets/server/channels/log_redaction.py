@@ -5,7 +5,7 @@ Keep channel secrets out of the server log.
 
 Two filters live here.
 
-**Bot tokens, SendGrid keys and webhook secrets** (``SecretScrubFilter``). Telegram puts the
+**Bot tokens, SendGrid and Mailgun keys and webhook secrets** (``SecretScrubFilter``). Telegram puts the
 bot token in the request URL (``https://api.telegram.org/bot<id>:<secret>/…``)
 and ``httpx`` logs every request URL at INFO; ``httpcore`` traces at DEBUG.
 A logging filter only runs for records logged on the logger it is attached to
@@ -75,6 +75,10 @@ class WebhookQueryRedactionFilter(logging.Filter):
 _BOT_TOKEN_RE = re.compile(r"(?:bot)?\d{3,}:[A-Za-z0-9_-]{20,}")
 #: A SendGrid API key: ``SG.<id>.<secret>``.
 _SENDGRID_KEY_RE = re.compile(r"SG\.[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]{6,})?")
+#: A Mailgun key: ``key-<32 hex>`` (older) or ``<32 hex>-<8 hex>-<8 hex>``.
+_MAILGUN_KEY_RE = re.compile(
+    r"(?<![0-9a-fA-F])(?:key-[0-9a-f]{32}|[0-9a-f]{32}-[0-9a-f]{8}-[0-9a-f]{8})(?![0-9a-fA-F])"
+)
 #: A derived webhook secret: 64 hex characters (HMAC-SHA256).
 _HEX_SECRET_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-f]{64}(?![0-9a-fA-F])")
 #: A LINE user id: ``U`` + 32 lowercase hex.
@@ -96,6 +100,7 @@ SCRUBBED_LOGGERS = (
 
 def scrub(text: str) -> str:
     text = _SENDGRID_KEY_RE.sub(REDACTED, text)
+    text = _MAILGUN_KEY_RE.sub(REDACTED, text)
     text = _LINE_USER_ID_RE.sub(REDACTED, text)
     return _HEX_SECRET_RE.sub(REDACTED, _BOT_TOKEN_RE.sub(REDACTED, text))
 

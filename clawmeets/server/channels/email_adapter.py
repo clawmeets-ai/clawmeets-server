@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: BUSL-1.1
 """
 clawmeets/server/channels/email_adapter.py
-The email adapter: SendGrid Inbound Parse in, SendGrid's mail send API out.
+The email adapter: SendGrid Inbound Parse in, SendGrid's mail send API out —
+or, with ``CLAWMEETS_EMAIL_PROVIDER=mailgun``, a Mailgun route in and
+Mailgun's messages API out (``email_mailgun.py`` says what differs; the reply
+itself, its headers and every rule below are the same for both).
 
 **One URL for the whole server.** Inbound Parse is set up once, by hand
 (go-live runbook step 6), to post every mail for ``CLAWMEETS_INBOUND_EMAIL_DOMAIN``
@@ -78,11 +81,12 @@ import re
 import time
 import unicodedata
 from typing import Any, Mapping, Optional, Sequence
+from urllib.parse import urlencode
 
 import httpx
 from pydantic import SecretStr
 
-from . import access
+from . import access, email_mailgun
 from .adapter import AdapterError, HealthReport, InboundEvent
 from .email_address import normalize_local, outbound_message_id, split_address
 from .email_format import check_size, render
@@ -166,15 +170,19 @@ def provider_detail(content: bytes, api_key: str = "") -> Optional[str]:
     key-shaped strings → ``<redacted>``, control characters folded, at most
     ``MAX_DETAIL_CHARS``. None when the body holds no message."""
     try:
-        errors = json.loads(content).get("errors")
+        parsed = json.loads(content)
+        errors = parsed.get("errors")
     except (ValueError, AttributeError):
         return None
-    if not isinstance(errors, list):
+    if isinstance(errors, list):
+        messages = [
+            e["message"] for e in errors
+            if isinstance(e, dict) and isinstance(e.get("message"), str) and e["message"].strip()
+        ]
+    elif isinstance(parsed.get("message"), str) and parsed["message"].strip():
+        messages = [parsed["message"]]  # Mailgun's shape: {"message": "..."}
+    else:
         return None
-    messages = [
-        e["message"] for e in errors
-        if isinstance(e, dict) and isinstance(e.get("message"), str) and e["message"].strip()
-    ]
     if not messages:
         return None
     text = "; ".join(messages)
@@ -208,9 +216,11 @@ class EmailAdapter:
     def __init__(
         self, *, transport: Optional[httpx.AsyncBaseTransport] = None,
         api_base: str = API_BASE, timeout: float = 30.0, connect_timeout: float = 10.0,
-        clock=None,
+        clock=None, dkim_dnsfunc=None,
     ) -> None:
         self._transport = transport
+        #: Mailgun's DKIM check: the TXT lookup (None = real DNS; tests fake it).
+        self.dkim_dnsfunc = dkim_dnsfunc
         self._api_base = api_base.rstrip("/")
         self._timeout = httpx.Timeout(timeout, connect=connect_timeout)
         self._deadline = timeout + connect_timeout
@@ -218,13 +228,20 @@ class EmailAdapter:
         self._store = None
         self._api_key = SecretStr("")
         self.domain = ""
+        self.provider = "sendgrid"
 
     def bind(self, *, store, config) -> None:
-        """Called by the gateway: the store (thread state) and the server's
-        SendGrid key and inbound domain."""
+        """Called by the gateway: the store (thread state), the provider, its
+        server-wide key and the inbound domain."""
         self._store = store
-        self._api_key = SecretStr(config.sendgrid_api_key)
         self.domain = config.inbound_email_domain
+        self.provider = getattr(config, "email_provider", "sendgrid")
+        if self.provider == "mailgun":
+            self._api_key = SecretStr(config.mailgun_agents_api_key)
+            if self._api_base == API_BASE:
+                self._api_base = config.mailgun_api_base.rstrip("/")
+        else:
+            self._api_key = SecretStr(config.sendgrid_api_key)
 
     def address_for(self, owner_username: str, agent_short_name: str, domain: str) -> Optional[str]:
         return address_for(owner_username, agent_short_name, domain)
@@ -249,10 +266,12 @@ class EmailAdapter:
         check_size(text)
         return [text]
 
-    def message_body(
+    def reply_parts(
         self, connection: ChannelConnection, *, conversation_key: str, text: str,
         retry_key: str,
     ) -> dict[str, Any]:
+        """The reply, provider-neutral: ``to``, ``from_email``, ``from_name``,
+        ``subject``, ``plain``, ``html`` and ``headers``."""
         state = self._store.email_state(connection.id, conversation_key) if self._store else None
         if state is None:
             raise AdapterError(CODE_NO_STATE, permanent=True)
@@ -270,14 +289,28 @@ class EmailAdapter:
         if automatic:
             headers["Auto-Submitted"] = "auto-replied" if fixed_reply else "auto-generated"
         return {
-            "personalizations": [{"to": [{"email": state.user_key}]}],
-            "from": {"email": state.agent_address, "name": name},
-            "subject": reply_subject(state.subject),
-            "content": [
-                {"type": "text/plain", "value": plain},
-                {"type": "text/html", "value": html},
-            ],
+            "to": state.user_key, "from_email": state.agent_address, "from_name": name,
+            "subject": reply_subject(state.subject), "plain": plain, "html": html,
             "headers": headers,
+        }
+
+    def message_body(
+        self, connection: ChannelConnection, *, conversation_key: str, text: str,
+        retry_key: str,
+    ) -> dict[str, Any]:
+        """SendGrid's ``/v3/mail/send`` JSON for the reply."""
+        parts = self.reply_parts(
+            connection, conversation_key=conversation_key, text=text, retry_key=retry_key,
+        )
+        return {
+            "personalizations": [{"to": [{"email": parts["to"]}]}],
+            "from": {"email": parts["from_email"], "name": parts["from_name"]},
+            "subject": parts["subject"],
+            "content": [
+                {"type": "text/plain", "value": parts["plain"]},
+                {"type": "text/html", "value": parts["html"]},
+            ],
+            "headers": parts["headers"],
             "tracking_settings": {
                 "click_tracking": {"enable": False, "enable_text": False},
                 "open_tracking": {"enable": False},
@@ -289,14 +322,27 @@ class EmailAdapter:
         self, connection: ChannelConnection, secret: SecretStr, *,
         conversation_key: str, text: str, retry_key: str,
     ) -> None:
-        body = self.message_body(
-            connection, conversation_key=conversation_key, text=text, retry_key=retry_key,
-        )
-        response = await self._call("POST", "/v3/mail/send", body)
+        if self.provider == "mailgun":
+            parts = self.reply_parts(
+                connection, conversation_key=conversation_key, text=text, retry_key=retry_key,
+            )
+            response = await self._call(
+                "POST", f"/v3/{split_address(parts['from_email'])[1]}/messages",
+                form=email_mailgun.reply_form(**parts),
+            )
+        else:
+            body = self.message_body(
+                connection, conversation_key=conversation_key, text=text, retry_key=retry_key,
+            )
+            response = await self._call("POST", "/v3/mail/send", body)
         status = response.status_code
         if status in (200, 202):
             return
         detail = provider_detail(response.content, self._api_key.get_secret_value())
+        if status == 404 and self.provider == "mailgun":
+            # Mailgun: the domain is not on this account (or the key's domain).
+            raise AdapterError(CODE_SENDER_NOT_AUTHORIZED, permanent=True,
+                               connection_status=CODE_SENDER_NOT_AUTHORIZED, detail=detail)
         if status == 400:
             raise AdapterError(CODE_REJECTED, permanent=True, detail=detail)
         if status == 401:
@@ -328,7 +374,23 @@ class EmailAdapter:
     async def health(
         self, connection: ChannelConnection, secret: SecretStr, *, url: str,
     ) -> HealthReport:
-        """``GET /v3/scopes`` with the server key: never sends a mail."""
+        """``GET /v3/scopes`` with the server key: never sends a mail.
+
+        Mailgun has no read-only check a domain sending key may call, so its
+        Test posts an EMPTY message to the domain: Mailgun checks the key
+        first (401) and the domain (403/404), then refuses the missing fields
+        (400) — a 400 is the key and domain working, and nothing is sent."""
+        if self.provider == "mailgun":
+            response = await self._call("POST", f"/v3/{self.domain}/messages", form=[])
+            if response.status_code == 401:
+                return HealthReport(CODE_TOKEN_REJECTED)
+            if response.status_code in (403, 404):
+                return HealthReport(CODE_SENDER_NOT_AUTHORIZED)
+            if response.status_code in (200, 400):
+                return HealthReport("working")
+            raise AdapterError(
+                CODE_PROVIDER_5XX if response.status_code >= 500 else CODE_PROVIDER_ERROR,
+            )
         response = await self._call("GET", "/v3/scopes", None)
         if response.status_code == 401:
             return HealthReport(CODE_TOKEN_REJECTED)
@@ -348,14 +410,23 @@ class EmailAdapter:
 
     # ── HTTP ─────────────────────────────────────────────────────────────
 
-    async def _call(self, method: str, path: str, body: Optional[dict]) -> httpx.Response:
-        headers = {"Authorization": f"Bearer {self._api_key.get_secret_value()}"}
+    async def _call(
+        self, method: str, path: str, body: Optional[dict] = None, *,
+        form: Optional[list[tuple[str, str]]] = None,
+    ) -> httpx.Response:
+        if self.provider == "mailgun":
+            token = base64.b64encode(f"api:{self._api_key.get_secret_value()}".encode()).decode()
+            headers = {"Authorization": f"Basic {token}"}
+        else:
+            headers = {"Authorization": f"Bearer {self._api_key.get_secret_value()}"}
+        if form is not None:
+            payload = {"content": urlencode(form).encode("ascii"), "headers": {
+                **headers, "Content-Type": "application/x-www-form-urlencoded"}}
+        else:
+            payload = {"headers": headers, **({"json": body} if body is not None else {})}
         try:
             async with httpx.AsyncClient(transport=self._transport, timeout=self._timeout) as client:
-                request = client.request(
-                    method, f"{self._api_base}{path}", headers=headers,
-                    **({"json": body} if body is not None else {}),
-                )
+                request = client.request(method, f"{self._api_base}{path}", **payload)
                 response = await asyncio.wait_for(request, timeout=self._deadline)
                 await response.aread()
         except (httpx.TimeoutException, asyncio.TimeoutError):

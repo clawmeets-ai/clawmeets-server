@@ -37,6 +37,7 @@ dependencies = [
     "markdown-it-py>=3.0",
     "python-multipart>=0.0.18",
     "idna>=3.7",
+    "dkimpy>=1.1",
     "pillow>=12.3.0",
 ]
 

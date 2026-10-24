@@ -89,8 +89,9 @@ class InboundForm:
 
 
 class _Collector:
-    def __init__(self, form: InboundForm) -> None:
+    def __init__(self, form: InboundForm, field_limits: dict[str, int]) -> None:
         self.form = form
+        self.field_limits = field_limits
         self.parts = 0
         self.ended = False
         self._header_field = bytearray()
@@ -144,9 +145,9 @@ class _Collector:
         self._filename = filename.decode("utf-8", errors="replace") if filename is not None else None
         ctype, _ = parse_options_header(self._headers.get(b"content-type", b""))
         self._content_type = ctype.decode("latin-1", errors="replace")
-        if self._filename is None and self._name in FIELD_LIMITS:
+        if self._filename is None and self._name in self.field_limits:
             self._buffer = bytearray()
-            self._limit = FIELD_LIMITS[self._name]
+            self._limit = self.field_limits[self._name]
 
     def on_part_data(self, data: bytes, start: int, end: int) -> None:
         self._size += end - start
@@ -182,15 +183,17 @@ def boundary_of(content_type: Optional[str]) -> bytes:
 
 async def read_inbound_form(
     content_type: Optional[str], stream: AsyncIterator[bytes], *,
-    max_bytes: int = MAX_EMAIL_BODY_BYTES,
+    max_bytes: int = MAX_EMAIL_BODY_BYTES, field_limits: Optional[dict[str, int]] = None,
 ) -> InboundForm:
     """Parse the POST from ``stream`` without ever holding it whole.
+    ``field_limits`` names the fields kept and their caps (SendGrid's
+    ``FIELD_LIMITS`` by default; Mailgun's are in ``email_mailgun``).
 
     Raises :class:`FormTooLarge`, :class:`FormInvalid` or :class:`FormLimit`.
     """
     boundary = boundary_of(content_type)
     form = InboundForm()
-    collector = _Collector(form)
+    collector = _Collector(form, FIELD_LIMITS if field_limits is None else field_limits)
     parser = MultipartParser(boundary, collector.callbacks())
     try:
         async for chunk in stream:
@@ -207,4 +210,33 @@ async def read_inbound_form(
         raise FormInvalid() from None
     if not collector.ended:
         raise FormInvalid()
+    return form
+
+
+async def read_urlencoded_form(
+    stream: AsyncIterator[bytes], *, max_bytes: int = MAX_EMAIL_BODY_BYTES,
+    field_limits: dict[str, int],
+) -> InboundForm:
+    """An ``application/x-www-form-urlencoded`` POST (Mailgun sends one when a
+    message has no attachments) read into the same :class:`InboundForm`,
+    under the same total cap and field caps. Raises :class:`FormTooLarge`."""
+    from urllib.parse import parse_qsl
+
+    form = InboundForm()
+    body = bytearray()
+    async for chunk in stream:
+        form.bytes_read += len(chunk)
+        if form.bytes_read > max_bytes:
+            raise FormTooLarge()
+        body += chunk
+    for name, value in parse_qsl(
+        bytes(body).decode("latin-1"), keep_blank_values=True, encoding="latin-1",
+    ):
+        if name not in field_limits:
+            continue
+        raw = value.encode("latin-1")
+        if len(raw) > field_limits[name]:
+            raw = raw[:field_limits[name]]
+            form.truncated.add(name)
+        form.fields[name] = raw
     return form
