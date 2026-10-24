@@ -320,7 +320,16 @@ def register(
         hub = HubStore(store)
         reg = hub.registration(config.hub_url)
         registered = reg is not None and reg.status != "none"
-        if registered and not reclaim:
+        # Waiting for the email code: registering again under the same key and
+        # name is the resend (the hub mails a fresh code, to this --email).
+        resend = registered and not reclaim and reg.status == "pending_email"
+        if resend and reg.name and reg.name != name:
+            raise OperatorError(
+                EXIT_STATE, "pending_other_name",
+                f"this server's registration as {reg.name!r} is waiting for its email code; "
+                f"re-run with --name {reg.name} to send a new code",
+            )
+        if registered and not reclaim and not resend:
             raise OperatorError(
                 EXIT_STATE, "already_registered",
                 f"this server is already registered with {config.hub_url} (status {reg.status}); "

@@ -854,7 +854,10 @@ def hub_register(
     data_dir: Path = typer.Option(DEFAULT_DATA_DIR, "--data-dir", help=_DATA_DIR_HELP),
     json_out: bool = typer.Option(False, "--json", help=_JSON_HELP),
 ):
-    """Register this server with the hub, or reclaim its registration under a new key."""
+    """Register this server with the hub, or reclaim its registration under a new key.
+
+    While the registration waits for its email code, running this again with
+    the same --name sends a fresh code (to this --email)."""
     if not accept_tos:
         _hub_fail(json_out, hub_operator.OperatorError(
             2, "usage",
