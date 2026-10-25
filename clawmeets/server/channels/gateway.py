@@ -2214,6 +2214,8 @@ class ChannelGateway:
            ``held_expired`` (``last_receipt`` kept);
         3. a held row whose probe is due is probed, if a relaying adapter is
            registered and the relay bucket has room; otherwise it stays due.
+           A held row with no envelope (a request the hub dispatched) is
+           never probed: its due time is cleared.
 
         A request ended here closes its paused batch with a note."""
         expired: list[str] = []
@@ -2237,6 +2239,10 @@ class ChannelGateway:
                     if now - since > hub_delivery.HELD_CEILING_SECONDS:
                         if self.hub.end_held(row.id, reason=REASON_HELD_EXPIRED, now=now):
                             held_expired.append(row.id)
+                    elif row.probe_due_at is not None and row.probe_due_at <= now and not row.envelope:
+                        # Nothing to probe with (a hub-dispatched request):
+                        # stop asking; the ceiling above still ends it.
+                        self.hub.set_probe_due(row.id, None)
                     elif row.probe_due_at is not None and row.probe_due_at <= now and adapter is not None:
                         connection = self.store.get_connection(row.connection_id)
                         if connection is None or not self._relay_bucket.take(first_send=False, now=now):

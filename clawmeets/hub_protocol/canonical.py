@@ -80,20 +80,27 @@ class Purpose(str, Enum):
     ENVELOPE = "clawmeets-hub/v1/envelope"
     LISTING = "clawmeets-hub/v1/listing"
     DEPLOYMENT_DOC = "clawmeets-hub/v1/deployment_doc"
+    # A requester's one ask for hub-ranked dispatch, and its report of what was used.
+    DISPATCH_ASK = "clawmeets-hub/v1/dispatch_ask"
+    DISPATCH_OUTCOME = "clawmeets-hub/v1/dispatch_outcome"
     # Signed by the hub.
     HELLO = "clawmeets-hub/v1/hello"
     STATEMENT = "clawmeets-hub/v1/statement"
     KEY_SET = "clawmeets-hub/v1/key_set"
     ROUTE = "clawmeets-hub/v1/route"
+    DISPATCH_STAMP = "clawmeets-hub/v1/dispatch_stamp"
 
 
 # Purposes whose signed bytes are not "object minus sig": a listing covers
 # aud, agent_name and issuer_fp beside it, a route stamp covers its envelope's
-# sig. signing_payload refuses them, so sign_object, verify_object and
+# sig, a dispatch stamp covers its ask's sig. signing_payload refuses them, so sign_object, verify_object and
 # verify_then_parse cannot check one cut loose from what it binds; use
-# frames.listing_signing_payload / route_signing_payload and their verifiers.
+# frames.listing_signing_payload / route_signing_payload /
+# dispatch_stamp_signing_payload and their verifiers.
 # Exactly the SIGNING_PURPOSE of the DETACHED_PAYLOAD models.
-DETACHED_PURPOSES: frozenset[Purpose] = frozenset({Purpose.LISTING, Purpose.ROUTE})
+DETACHED_PURPOSES: frozenset[Purpose] = frozenset(
+    {Purpose.LISTING, Purpose.ROUTE, Purpose.DISPATCH_STAMP}
+)
 
 _B64URL_RE = re.compile(r"[A-Za-z0-9_-]*")
 # A JSON string literal (escapes included), and any character that is not a bracket.

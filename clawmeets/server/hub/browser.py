@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, ClassVar, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_serializer
 
 from clawmeets.hub_protocol.constants import MAX_NOTE_CHARS, MAX_SEARCH_LIMIT
 from clawmeets.models.chatroom import ParticipantHub, ParticipantInfo, RoomFlow
@@ -151,6 +151,18 @@ class HubChannel(_Model):
     # before the switch became the one sharing control: the card offers
     # Make private.
     public: bool = False
+    # Hub-ranked dispatch: the owner's opt-in to requests the hub routes to
+    # this agent, its daily cap, and how many it took today.
+    accept_dispatch: bool = False
+    dispatch_daily_cap: int = 20
+    dispatched_today: int = 0
+
+
+class DispatchSettingsRequest(_Model):
+    """PUT /me/channels/hub/{agent_full_name}/dispatch."""
+
+    accept: StrictBool
+    daily_cap: StrictInt = Field(ge=1, le=200)
 
 
 # ── enrollment: this server on the hub, and the user as an agent owner ────
@@ -762,7 +774,8 @@ SHARED_MODELS: tuple[type[BaseModel], ...] = (RoomFlow, ParticipantInfo, Partici
 BROWSER_MODELS: dict[str, type[BaseModel]] = {
     m.__name__: m for m in (
         BridgeDelivery, BridgeDeliveryList, HubBridgeDeliveryPayload, HubBridgeDeliveryEvent,
-        HubConfigOut, HubChannel, EnableRequest, DisableRequest, BlockRequest, BlockedDeployment,
+        HubConfigOut, HubChannel, EnableRequest, DisableRequest, DispatchSettingsRequest, BlockRequest,
+        BlockedDeployment,
         BlockedList, HubAgentSearch, HubAgent, HubAgentPage, HubAgentDetail, ReportRequest,
         ReportAccepted, RetainedAgent, RetainedList, HubTarget, HubProjectFields, StartConversationRequest, ConversationTarget,
         StartConversationResponse, SendMessageRequest, Delivery, SendMessageResponse, DeliveryList,

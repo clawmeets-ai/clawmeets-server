@@ -72,7 +72,7 @@ from clawmeets.server.channels.store import HUB_CHANNEL, KIND_HUB_REQUEST, Outbo
 from clawmeets.sync.changelog import ChangelogEntryType
 
 from . import keys, operator
-from .adapter import HubAdapter, next_local_midnight
+from .adapter import HubAdapter, local_day, next_local_midnight
 from .avatar import HubAvatars
 from .browser import (
     HubChannel,
@@ -163,7 +163,7 @@ class HubRuntime:
         gateway.on_hub_inspected = self.adapter.on_inspected
         gateway.hub_files_for = self.adapter.files_for
         gateway.hub_files_flushed = self.adapter.files_flushed
-        #: Inbound deliver / deliver_probe frames, handled in order, off the
+        #: Inbound deliver / deliver_probe / dispatch_deliver frames, handled in order, off the
         #: socket's reader (a first contact asks the hub for a key).
         self._inbound: Optional[asyncio.Queue] = None
         self._inbound_task: Optional[asyncio.Task] = None
@@ -503,13 +503,17 @@ class HubRuntime:
 
     async def _route(self, parsed) -> None:
         """deliver to an agent here -> the adapter; a reply to one of this
-        server's requesters -> the mirror; deliver_probe -> the adapter.
+        server's requesters -> the mirror; deliver_probe and a hub-dispatched
+        ask (dispatch_deliver) -> the adapter.
         Outside mode full nothing is relayed: a message is refused
         browse-only (and stored), a probe goes unanswered."""
         full = self.mode == "full"
         if parsed.frame.type == "deliver_probe":
             if full:
                 await self.adapter.on_deliver_probe(parsed)
+            return
+        if parsed.frame.type == "dispatch_deliver":
+            await self.adapter.on_dispatch_deliver(parsed, browse_only=not full)
             return
         envelope = parsed.data.get("envelope")
         if not isinstance(envelope, Mapping):
@@ -558,7 +562,8 @@ class HubRuntime:
                            open_conversations=threads, in_flight_messages=rows,
                            next_midnight=next_local_midnight(now), now=now,
                            isolation=isolation, held_conversations=held,
-                           local_conversations=local_conversation_count(self._ctx.model_ctx, agent))
+                           local_conversations=local_conversation_count(self._ctx.model_ctx, agent),
+                           dispatched_today=self.hub.dispatch_count(agent.id, local_day(now)))
 
     async def push_channel(self, agent_id: str) -> None:
         """``hub_channel_status`` (the whole masked HubChannel) to the agent's owner."""

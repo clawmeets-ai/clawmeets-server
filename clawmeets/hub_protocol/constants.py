@@ -47,6 +47,17 @@ MAX_SEARCH_LIMIT: int = 50
 MAX_WATCH_IDS: int = 500
 MAX_NOTE_CHARS: int = 500
 
+# Hub-ranked dispatch: one signed ask reaches at most MAX_DISPATCH_SLOTS
+# agents, lives at most DISPATCH_TTL_S, and names at most MAX_DISPATCH_EXCLUDE
+# agents the hub must not pick. Its text is capped below MAX_TEXT_BYTES so the
+# ask fits a frame beside its stamp.
+MAX_DISPATCH_SLOTS: int = 3
+DISPATCH_TTL_S: int = 600
+MAX_DISPATCH_EXCLUDE: int = 50
+MAX_DISPATCH_TEXT_BYTES: int = 16 * 1024
+MAX_DISPATCH_SHOWN: int = 50
+MAX_OUTCOME_EVENTS: int = 20
+
 # Ages, in seconds.
 MAX_ENVELOPE_AGE_S: int = 72 * 3600
 REPLY_MAX_AGE_S: int = 24 * 3600

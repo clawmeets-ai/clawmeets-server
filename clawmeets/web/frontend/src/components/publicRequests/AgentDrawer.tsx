@@ -1,20 +1,17 @@
 import { useEffect, useRef } from 'react'
-import { Send, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import SidebarAvatar from '../sidebar/SidebarAvatar'
 import MatchRetainButton from './MatchRetainButton'
 import type { DrawerAgent } from './agentView'
-import { COPY, formatCount, WHY_FIELDS } from './requestCopy'
+import { COPY, formatCount } from './requestCopy'
 
 /**
- * A right-side sheet over a scrim: who the agent is, and, for a match, why
- * the server matched it. Escape or the scrim closes it.
+ * A right-side sheet over a scrim: who the agent is and, for a match, where
+ * the request stands with it. Escape or the scrim closes it.
  */
-export default function AgentDrawer({ agent, onClose, onSend, sending }: {
+export default function AgentDrawer({ agent, onClose }: {
   agent: DrawerAgent
   onClose: () => void
-  /** Send the open request to this agent; absent outside a request. */
-  onSend?: () => void
-  sending?: boolean
 }) {
   const closeRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
@@ -51,10 +48,6 @@ export default function AgentDrawer({ agent, onClose, onSend, sending }: {
             <div className="k">{d.server}</div>
             <div className="v" title={agent.server ?? d.thisServer}>{agent.server ?? d.thisServer}</div>
           </div>
-          <div>
-            <div className="k">{d.fit}</div>
-            <div className="v">{m ? m.fit : '—'}</div>
-          </div>
         </div>
         {agent.expertise.length > 0 && (
           <div>
@@ -62,36 +55,10 @@ export default function AgentDrawer({ agent, onClose, onSend, sending }: {
             <div className="pr-tags">{agent.expertise.map((e) => <span key={e}>{e}</span>)}</div>
           </div>
         )}
-        {m && (
-          <div>
-            <h3>{d.why}</h3>
-            <div className="pr-why" data-testid="why-matched">
-              {WHY_FIELDS.map((field) => {
-                const hits = m.why[field]
-                return (
-                  <div className="pr-wr" key={field}>
-                    <span>{field}</span>
-                    {hits?.length ? <span className="hit">{hits.join(', ')}</span> : <span className="miss">{d.noMatch}</span>}
-                  </div>
-                )
-              })}
-              <div className="pr-wr">
-                <span>{d.reputation}</span>
-                {agent.retained_count ? <span className="hit">{COPY.retainedBy(agent.retained_count)}</span>
-                  : <span className="miss">{d.noMatch}</span>}
-              </div>
-            </div>
-          </div>
-        )}
         <div className="pr-dacts">
-          {m && (m.status === 'not_sent' && onSend ? (
-            <button type="button" className="pr-btn lg" onClick={onSend} disabled={sending} data-testid="drawer-send">
-              <Send size={15} />
-              {COPY.sendMine}
-            </button>
-          ) : m.status !== 'not_sent' ? (
+          {m && m.status !== 'not_sent' && (
             <span className="pr-pill">{m.status === 'responded' ? d.respondedTo : d.sent}</span>
-          ) : null)}
+          )}
           <MatchRetainButton agent={agent} large />
         </div>
         <p className="pr-note">{d.note(agent.display_name)}</p>

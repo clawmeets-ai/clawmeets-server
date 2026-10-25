@@ -77,6 +77,13 @@ export const HUB_CARD_COPY = {
   makePublic: 'Make public',
   makingPublic: 'Making public…',
   notAvailable: "The ClawMeets Hub isn't available yet.",
+  dispatchLabel: 'Accept requests the hub routes to this agent',
+  dispatchBody:
+    'When someone asks the hub for help without naming an agent, the hub may send their request here if it ' +
+    'looks like a good fit. Each one runs this agent once and counts against your model usage.',
+  dispatchCapLabel: 'Most per day',
+  dispatchToday: (n: number, cap: number) => `${n} of ${cap} routed requests today`,
+  dispatchSaving: 'Saving…',
 } as const
 
 const REJECTS: Record<string, { title: string; line: string }> = {

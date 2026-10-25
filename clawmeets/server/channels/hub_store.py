@@ -297,6 +297,11 @@ class HubChannelState:
     daily_run_cap: int = 200
     runs_today: int = 0
     runs_reset_at: Optional[float] = None
+    # Hub-ranked dispatch: the owner opted the agent in to requests the hub
+    # routes to it (the listing then says accepts_dispatch), at most
+    # dispatch_daily_cap of them a local day (hub_dispatch_counts).
+    accept_dispatch: bool = False
+    dispatch_daily_cap: int = 20
 
 
 @dataclass(frozen=True)
@@ -317,7 +322,7 @@ _CHANNEL_COLUMNS = (
     "agent_id", "owner_id", "connection_id", "enabled", "status", "status_detail", "reject_reason",
     "enable_request_id", "cert", "cert_serial", "cert_not_after", "rotate_by", "last_success_at",
     "next_retry_at", "disabled_at", "stop_now", "unregister_pending", "daily_run_cap", "runs_today",
-    "runs_reset_at", "created_at", "updated_at",
+    "runs_reset_at", "created_at", "updated_at", "accept_dispatch", "dispatch_daily_cap",
 )
 
 
@@ -836,6 +841,31 @@ class HubStore:
                 (project_id, message_id),
             ).fetchone()[0]
 
+    def enqueue_dispatched_request(
+        self, *, connection_id: str, target_genesis_fp: str, project_id: str,
+        message_id: str, conversation_key: str, text: str, now: float,
+    ) -> str:
+        """A request the HUB delivered for us (hub-ranked dispatch): the row
+        exists so the host's receipt completes it and the thread reads like
+        any other, but it carries no envelope and starts ``awaiting_receipt``
+        with no receipt deadline, so the outbox worker never relays or
+        re-relays it, and a held receipt schedules no delivery probe for it
+        (``apply_receipt``). A repeat returns the first row's id."""
+        row_id = uuid.uuid4().hex
+        with self._store._tx() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO outbox (id, connection_id, conversation_key, kind,"
+                " project_id, message_id, part_index, retry_key, text, state, attempts,"
+                " next_attempt_at, created_at, updated_at, forwarded_at, relay_count)"
+                " VALUES (?,?,?,?,?,?,0,?,?,?,0,?,?,?,?,1)",
+                (row_id, connection_id, f"{target_genesis_fp}/{conversation_key}", KIND_HUB_REQUEST,
+                 project_id, message_id, f"{row_id}:0", text, AWAITING_RECEIPT, now, now, now, now),
+            )
+            return db.execute(
+                "SELECT id FROM outbox WHERE project_id = ? AND message_id = ? AND part_index = 0",
+                (project_id, message_id),
+            ).fetchone()[0]
+
     def set_reply_envelope(self, row_id: str, envelope: Mapping[str, Any]) -> bool:
         """A host's reply row, signed once at its first send: store the
         envelope (with its purpose) unless the row already has one, so a
@@ -1028,9 +1058,13 @@ class HubStore:
                     (SENT, t.last_receipt, now, row["id"]),
                 )
             elif t.kind == "held":
+                # A row with no envelope (a request the hub dispatched for us)
+                # has nothing to probe with: no probe is scheduled, and it
+                # waits for a receipt, a reply or the held ceiling.
                 db.execute(
                     "UPDATE outbox SET state = ?, last_receipt = ?, reason = NULL, detail = NULL,"
-                    " delivery_detail = ?, receipt_due_at = NULL, parked_until = NULL, probe_due_at = ?,"
+                    " delivery_detail = ?, receipt_due_at = NULL, parked_until = NULL,"
+                    " probe_due_at = CASE WHEN envelope IS NULL THEN NULL ELSE ? END,"
                     " updated_at = ? WHERE id = ?",
                     (SENT, t.last_receipt, t.delivery_detail, now + hub_delivery.PROBE_SECONDS, now, row["id"]),
                 )
@@ -1158,7 +1192,7 @@ class HubStore:
             )
         return ids
 
-    def set_probe_due(self, row_id: str, at: float) -> None:
+    def set_probe_due(self, row_id: str, at: Optional[float]) -> None:
         with self._store._tx() as db:
             db.execute("UPDATE outbox SET probe_due_at = ? WHERE id = ?", (at, row_id))
 
@@ -1546,7 +1580,7 @@ class HubStore:
             return None
         data = dict(row)
         data["cert"] = json.loads(data["cert"]) if data["cert"] else None
-        for flag in ("enabled", "stop_now", "unregister_pending"):
+        for flag in ("enabled", "stop_now", "unregister_pending", "accept_dispatch"):
             data[flag] = bool(data[flag])
         return HubChannelState(**data)
 
@@ -1565,7 +1599,10 @@ class HubStore:
 
     def set_channel_state(self, state: HubChannelState) -> None:
         """Insert or replace the whole row. The run count is left as stored
-        (it changes only through ``bump_runs_today``) unless the row is new."""
+        (it changes only through ``bump_runs_today``) unless the row is new, and
+        so are the dispatch opt-in and its cap (only ``set_dispatch`` changes
+        them), so a save from a state read before the owner's change cannot
+        undo it."""
         cert = _dumps(state.cert) if state.cert is not None else None
         values = {
             **{c: getattr(state, c) for c in _CHANNEL_COLUMNS},
@@ -1575,7 +1612,7 @@ class HubStore:
         }
         columns = (*_CHANNEL_COLUMNS, "cert_purpose")
         values["cert_purpose"] = Purpose.AGENT_CERT.value if cert is not None else None
-        kept = {"agent_id", "created_at", "runs_today", "runs_reset_at"}
+        kept = {"agent_id", "created_at", "runs_today", "runs_reset_at", "accept_dispatch", "dispatch_daily_cap"}
         updates = ", ".join(f"{c} = excluded.{c}" for c in columns if c not in kept)
         with self._store._tx() as db:
             db.execute(
@@ -1625,6 +1662,49 @@ class HubStore:
         db.execute(
             "UPDATE hub_channels SET runs_today = ?, runs_reset_at = ? WHERE agent_id = ?",
             (count + 1, next_reset_at if fresh else row["runs_reset_at"], agent_id),
+        )
+        return count + 1
+
+    def set_dispatch(self, agent_id: str, *, accept: bool, daily_cap: int, now: float) -> Optional[HubChannelState]:
+        """The owner's dispatch opt-in and its daily cap, on an existing
+        channel row. None when the agent has no Hub channel row."""
+        with self._store._tx() as db:
+            changed = db.execute(
+                "UPDATE hub_channels SET accept_dispatch = ?, dispatch_daily_cap = ?, updated_at = ?"
+                " WHERE agent_id = ?", (1 if accept else 0, int(daily_cap), now, agent_id),
+            ).rowcount
+        return self.channel_state(agent_id) if changed else None
+
+    def dispatch_count(self, agent_id: str, day: str) -> int:
+        """Hub-dispatched asks accepted for the agent on local ``day``."""
+        row = self._store._db().execute(
+            "SELECT count FROM hub_dispatch_counts WHERE agent_id = ? AND day = ?", (agent_id, day),
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    @staticmethod
+    def take_dispatch_slot(db, agent_id: str, day: str) -> Optional[int]:
+        """Count one hub-dispatched ask against the agent's daily cap, inside
+        a transaction the caller holds (the accept transaction, so the count
+        and the acceptance are one commit and a duplicate never counts).
+        Returns the day's count with this one, or None when the cap is spent
+        or the agent has no Hub channel. Older days' rows are pruned."""
+        row = db.execute(
+            "SELECT dispatch_daily_cap FROM hub_channels WHERE agent_id = ?", (agent_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        current = db.execute(
+            "SELECT count FROM hub_dispatch_counts WHERE agent_id = ? AND day = ?", (agent_id, day),
+        ).fetchone()
+        count = int(current[0]) if current is not None else 0
+        if count >= int(row[0]):
+            return None
+        db.execute("DELETE FROM hub_dispatch_counts WHERE agent_id = ? AND day <> ?", (agent_id, day))
+        db.execute(
+            "INSERT INTO hub_dispatch_counts (agent_id, day, count) VALUES (?, ?, 1)"
+            " ON CONFLICT(agent_id, day) DO UPDATE SET count = count + 1",
+            (agent_id, day),
         )
         return count + 1
 

@@ -67,6 +67,12 @@ class ErrorCode(StrEnum):
     # owner per deployment), or the hub banned that owner.
     OWNER_UNVERIFIED = "owner_unverified"
     OWNER_BANNED = "owner_banned"
+    # Hub-ranked dispatch: the ask is past its expiry, the hub cannot rank
+    # (no scorer, or the scorer failed: the requester ranks locally instead),
+    # or an ask_id was reused with different content.
+    DISPATCH_EXPIRED = "dispatch_expired"
+    RANKING_UNAVAILABLE = "ranking_unavailable"
+    DUPLICATE_ASK = "duplicate_ask"
     # Generic error frame only: a frame that is not valid JSON or does not fit
     # its schema, and a frame type this end does not know.
     INVALID_FRAME = "invalid_frame"
@@ -121,6 +127,10 @@ class NotAcceptingDetail(StrEnum):
     BROWSE_ONLY = "browse_only"
     DAILY_CAP = "daily_cap"
     REQUESTS_FULL = "requests_full"
+    # A hub-dispatched ask: the agent's owner has not opted in to routed
+    # requests, or the agent's daily cap of them is spent.
+    DISPATCH_NOT_ACCEPTED = "dispatch_not_accepted"
+    DISPATCH_CAP_REACHED = "dispatch_cap_reached"
 
 
 class RelayAckResult(StrEnum):
@@ -151,6 +161,15 @@ class ReportReason(StrEnum):
 class RegisterStatus(StrEnum):
     PENDING_EMAIL = "pending_email"
     ACTIVE = "active"
+
+
+class OutcomeKind(StrEnum):
+    """OutcomeEvent.kind: what the requester did with a dispatched reply."""
+
+    USED = "used"
+    REDONE = "redone"
+    DISMISSED = "dismissed"
+    ANSWERED = "answered"
 
 
 class StatementKind(StrEnum):

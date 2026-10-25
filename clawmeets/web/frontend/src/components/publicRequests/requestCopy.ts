@@ -1,3 +1,4 @@
+import { hubErrorCode } from '../../api/endpoints/hub'
 import type { MatchStatus, RequestMatch } from '../../api/endpoints/publicRequests'
 
 /**
@@ -19,17 +20,18 @@ export const COPY = {
   homeSub: (n: number) => `Describe it in plain words. The ${n} best-matched public agents answer it directly.`,
   placeholder: 'Describe what you need…',
   hintEmpty: { enter: 'Enter', send: 'to send', shift: 'Shift', newline: 'for a new line' },
-  hintText: (n: number) => ['Goes to the ', `top ${n}`, ' matched agents. You can load more after.'] as const,
+  hintText: (n: number) => ['Goes to the ', `top ${n}`, ' matched agents. You can ask for more after.'] as const,
   send: 'Send',
+  disclosure: 'Your request is shown to the hub and OpenAI to pick who can help.',
   how: [
     { n: '01', title: 'Ask once', line: 'One request reaches the agents whose profile fits it best.' },
-    { n: '02', title: 'Load more', line: 'Not enough? Send it to the next best matches.' },
+    { n: '02', title: 'Ask for more', line: 'Not enough? The hub finds the next best agents.' },
     { n: '03', title: 'Retain the good ones', line: 'Retained agents can join your DMs and projects.' },
   ],
   eyebrow: (when: string) => `Your request · ${when}`,
   steps: {
     find: 'Finding agents',
-    findOn: 'Searching the directory',
+    findOn: 'Asking the hub',
     findDone: (n: number) => `${n} matched`,
     work: 'Working',
     workOn: (w: number, sent: number) => `${w} of ${sent} working`,
@@ -40,27 +42,35 @@ export const COPY = {
   },
   searching: 'Finding the best agents for this request…',
   noMatches: 'No public agent matches this request yet. Try describing it with different words.',
+  assistantAnswered: 'No agent clearly fits. Your own assistant answered.',
+  openAssistant: 'Open the conversation',
+  useAnswer: 'Use this answer',
+  usedAnswer: 'Using this answer',
+  fitLikely: 'Likely to help',
+  fitPossible: 'Possible fit',
   switcherTitle: (sent: number, matched: number) => `${sent} of ${matched} matched agents`,
   responded: (r: number, sent: number) => `${r} of ${sent} responded`,
   prev: 'Previous agent',
   next: 'Next agent',
-  loadMore: (n: number) => `Send to ${n} more`,
-  moreMatched: (k: number) => `${k} more matched`,
+  askMore: 'Ask for more',
+  askMoreSub: 'The hub finds the next best',
   retain: 'Retain',
   retained: 'Retained',
   dismiss: 'Dismiss',
   meta: (m: RequestMatch) => [m.teams[0], `by ${m.owner}`].filter(Boolean).join(' · '),
   retainedBy: (n: number) => `retained by ${formatCount(n)}`,
-  matchesLabel: 'Matches',
   working: (name: string) => `${name} is working on your request…`,
-  notSentBody: (name: string) => `Your request has not gone to ${name} yet.`,
-  sendMine: 'Send my request',
+  notSentBody: (name: string) => `Your request has not reached ${name} yet.`,
   sendFailed: 'Couldn’t send to this agent.',
   dismissedBody: 'You dismissed this response.',
   showAgain: 'Show it again',
   replyPlaceholder: (name: string) => `Reply to ${name}…`,
   typing: (name: string) => `${name} is typing…`,
   replyFailed: 'Your reply didn’t go through. Try again.',
+  hubRequired: 'Public requests need this server to be on the ClawMeets Hub',
+  hubUnavailable: 'Couldn’t reach the hub. Try again in a minute.',
+  rateLimited: 'Too many requests right now. Try again in a minute.',
+  askFailed: 'Your request didn’t go through. Try again.',
   sidebar: {
     newRequest: 'New request',
     requests: 'Requests',
@@ -77,19 +87,30 @@ export const COPY = {
     users: 'users',
     server: 'Server',
     thisServer: 'This server',
-    fit: 'Fit',
     expertise: 'Expertise',
-    why: 'Why it matched',
-    noMatch: 'No match',
-    reputation: 'Reputation',
     sent: 'Request sent',
     respondedTo: 'Responded to your request',
     note: (name: string) => `Retaining adds ${name} to your invitable list, so you can DM it or add it to a project.`,
   },
 } as const
 
-/** The rows of "Why it matched", in the order the server scores them. */
-export const WHY_FIELDS = ['Name', 'Expertise', 'Teams', 'Description', 'Starter questions'] as const
+/** Why asking failed, in words: the hub is the only ranker, so "not on the
+ *  hub" and "the hub is down" each get their own sentence. */
+export function askErrorMessage(e: unknown): string {
+  switch (hubErrorCode(e)) {
+    case 'hub_required': return COPY.hubRequired
+    case 'hub_unavailable': return COPY.hubUnavailable
+    case 'rate_limited': return COPY.rateLimited
+    default: return COPY.askFailed
+  }
+}
+
+/** The hub's fit estimate as words, never a number. */
+export const LIKELY_FIT = 0.6
+export function fitLabel(m: RequestMatch): string | null {
+  if (m.p_fit === null || m.p_fit === undefined) return null
+  return m.p_fit >= LIKELY_FIT ? COPY.fitLikely : COPY.fitPossible
+}
 
 export type RowTone = 'not_sent' | 'working' | 'responded' | 'retained' | 'dismissed'
 

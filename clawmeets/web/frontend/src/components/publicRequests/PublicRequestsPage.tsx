@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { useRetainedAgents } from '../../hooks/useAgentAccess'
-import { usePublicRequest, useSendPublicRequest } from '../../hooks/usePublicRequests'
+import { usePublicRequest } from '../../hooks/usePublicRequests'
 import Loading from '../common/Loading'
 import AgentDrawer from './AgentDrawer'
 import RequestHome from './RequestHome'
@@ -15,7 +15,6 @@ export default function PublicRequestsPage() {
   const [params, setParams] = useSearchParams()
   const { data: request, isLoading, isError } = usePublicRequest(requestId)
   const { data: retained } = useRetainedAgents()
-  const send = useSendPublicRequest(requestId ?? '')
 
   const drawerRef = params.get(AGENT_PARAM)
   const drawerAgent: DrawerAgent | null = useMemo(() => {
@@ -42,16 +41,7 @@ export default function PublicRequestsPage() {
   return (
     <div className="pr-page" data-testid="public-requests-page">
       {body}
-      {drawerAgent && (
-        <AgentDrawer
-          agent={drawerAgent}
-          onClose={closeAgent}
-          sending={send.isPending}
-          onSend={request && drawerAgent.match
-            ? () => send.mutate({ agent_refs: [drawerAgent.agent_ref] })
-            : undefined}
-        />
-      )}
+      {drawerAgent && <AgentDrawer agent={drawerAgent} onClose={closeAgent} />}
     </div>
   )
 }

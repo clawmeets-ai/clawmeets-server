@@ -87,7 +87,8 @@ from clawmeets.hub_protocol.constants import (
     REPLY_MAX_AGE_S,
 )
 from clawmeets.hub_protocol.envelope import AgentCert, Envelope, check_envelope_frame
-from clawmeets.hub_protocol.ids import agent_ref, parse_agent_ref
+from clawmeets.hub_protocol.constants import DISPATCH_TTL_S
+from clawmeets.hub_protocol.ids import agent_ref, dispatched_message_id, parse_agent_ref
 from clawmeets.models.chatroom import Chatroom
 from clawmeets.models.project import Project
 from clawmeets.server.channels.hub_store import HubThread, RemoteAgent
@@ -272,6 +273,120 @@ class RequesterMirror:
                 chatroom_name=UC, participants=members,
             ))
         return Project.get(thread.project_id, self._ctx.model_ctx)
+
+    # ── hub-ranked dispatch ──────────────────────────────────────────────
+
+    def _principal(self, user: "User") -> dict[str, Any]:
+        return {"kind": "user", "user_id": user.id, "username": user.username[:40],
+                "display_name": (getattr(user, "display_name", None) or user.username)[:80]}
+
+    def sign_ask(self, user: "User", *, ask_id: str, text: str, slots: Sequence[str],
+                 exclude: Sequence[Mapping[str, str]] = ()) -> dict:
+        """One DispatchAsk, signed by the identity key: the hub may route
+        ``text`` to at most ``len(slots)`` agents, none in ``exclude``, for
+        the next DISPATCH_TTL_S seconds. Each slot is the project id of the
+        thread this server will open for whoever takes it."""
+        identity = self.runtime.identity()
+        if identity is None:
+            raise HubError("hub_unreachable", "this server is not registered with the hub")
+        now = self._now()
+        return sign_object({
+            "v": PROTOCOL_VERSION, "aud": self.config.hub_url, "ask_id": ask_id,
+            "from_deployment": identity.deployment_id, "from_fingerprint": identity.fingerprint,
+            "from_principal": self._principal(user), "text": text, "slots": list(slots),
+            "exclude": [dict(e) for e in exclude], "sent_at": now, "expires_at": int(now) + DISPATCH_TTL_S,
+        }, identity.key, purpose=Purpose.DISPATCH_ASK)
+
+    def sign_outcome(self, *, ask_id: str, plan_id: str, events: Sequence[Mapping[str, Any]]) -> dict:
+        """A DispatchOutcome (ids and kinds only), signed by the identity key."""
+        identity = self.runtime.identity()
+        if identity is None:
+            raise HubError("hub_unreachable", "this server is not registered with the hub")
+        return sign_object({
+            "v": PROTOCOL_VERSION, "aud": self.config.hub_url, "ask_id": ask_id, "plan_id": plan_id,
+            "from_deployment": identity.deployment_id, "from_fingerprint": identity.fingerprint,
+            "events": [dict(e) for e in events], "ts": int(self._now()),
+        }, identity.key, purpose=Purpose.DISPATCH_OUTCOME)
+
+    async def open_dispatched_thread(self, user: "User", pick, *, ask_id: str, text: str) -> HubThread:
+        """The thread for one pick of a live dispatch plan, under the slot the
+        ask pre-committed (its project id). The hub delivers the request
+        itself, so nothing is relayed from here: the request is appended as
+        the user under ``dispatched_message_id(ask_id, slot)`` (the id the
+        host acks and replies to) and recorded as a request row already
+        forwarded, which the host's receipt completes like any other. From
+        then on it is an ordinary hub thread: the reply checks and the
+        binding to the pick's agent are unchanged. Idempotent."""
+        identity = self.runtime.identity()
+        if identity is None:
+            raise HubError("hub_unreachable", "this server is not registered with the hub")
+        genesis_fp, agent_name = pick.agent.deployment_fingerprint, pick.agent.agent_name
+        if genesis_fp == identity.genesis_fp:
+            raise HubError("local_agent", "this agent is on this server")
+        slot = pick.slot
+        thread = self.hub.thread_for_project(slot)
+        if thread is None:
+            try:
+                pin = await keys.look_up_and_pin(
+                    self.runtime.client.request, self.hub, self.config, now=self._now(),
+                    deployment_id=pick.to_deployment, fingerprint=genesis_fp,
+                    deployment_name=pick.deployment_name,
+                )
+            except (keys.ChainUnverified, ConnectionError, asyncio.TimeoutError) as exc:
+                logger.warning("Hub dispatch: the pick's key chain does not check out: %s", exc)
+                raise HubError("hub_unreachable", "the agent's server could not be verified") from None
+            if pin.genesis_fp != genesis_fp:
+                raise HubError("invalid_agent_id", "the id is not the deployment's root")
+            if pin.identity_changed_at is not None:
+                raise HubError("identity_changed", "that server's identity changed")
+            head = self.hub.chain(pin.genesis_fp)[-1]
+            stand_in = self.hub.upsert_remote_agent(
+                genesis_fp=pin.genesis_fp, agent_name=agent_name,
+                deployment_name=pick.deployment_name or pin.deployment_name or pin.genesis_fp,
+                current_fp=head.fingerprint, deployment_id=pin.deployment_id, now=self._now(),
+            )
+            thread = self.hub.open_thread(user_id=user.id, client_thread_key=f"dispatch:{ask_id}:{slot}",
+                                          project_id=slot, stand_in=stand_in, now=self._now())
+        if thread.user_id != user.id or thread.project_id != slot \
+                or thread.stand_in_id != agent_ref(genesis_fp, agent_name):
+            raise HubError("project_not_found", "the slot belongs to another conversation")
+        stand_in = self.hub.remote_agent(thread.stand_in_id)
+        project = await self._ensure_project(thread, stand_in, user)
+        now = self._now()
+        message_id = dispatched_message_id(ask_id, slot)
+        runloop = await self._ctx.runloop_manager.get_or_create(project.id, project.name, project.coordinator_id)
+        existing = {getattr(e.payload, "id", None): e for e in runloop.get_entries_since(0)
+                    if e.entry_type == ChangelogEntryType.MESSAGE}
+        if message_id in existing:
+            version = existing[message_id].version
+        else:
+            entry = await runloop.append(ChangelogEntryType.MESSAGE, MessagePayload(
+                chatroom_name=UC, id=message_id, ts=datetime.fromtimestamp(now, UTC),
+                from_participant_id=user.id, from_participant_name=user.username, content=text,
+            ))
+            version = entry.version
+        self.hub.enqueue_dispatched_request(
+            connection_id=self.requests_connection(), target_genesis_fp=thread.genesis_fp,
+            project_id=slot, message_id=message_id, conversation_key=f"{identity.genesis_fp}/{slot}",
+            text=text, now=now,
+        )
+        tracker = getattr(self._ctx, "work_tracker", None)
+        if tracker is not None and await tracker.get_pending_work(slot, UC) is None:
+            try:
+                await tracker.create_pending_work(
+                    message_id=message_id, message_version=version, project_id=slot,
+                    project_name=project.name, chatroom_name=UC, coordinator_id=project.created_by,
+                    expected_participants=[thread.stand_in_id], awaiting_delivery=True,
+                )
+            except ValueError:
+                pass
+        # The host's receipt may have beaten this row (the hub delivers right
+        # after its plan, while the picks' keys were being pinned here).
+        client = self.runtime.client
+        if client is not None:
+            await client.replay_early_receipt(message_id)
+        await self._broadcast(project, runloop.get_current_version())
+        return thread
 
     # ── sending ──────────────────────────────────────────────────────────
 

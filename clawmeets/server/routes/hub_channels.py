@@ -16,6 +16,11 @@ written in design section 5 and frozen in ``server/hub/browser.py``:
 - ``POST …/disable`` ``{confirm: true, stop_now?}``: local and immediate in
   every mode and registration state, with the hub off too; never a hub-state
   error. Makes the agent private (which clears owner isolation). ``agent_unregister`` goes now or on the next connect.
+- ``PUT …/dispatch`` ``{accept, daily_cap}``: whether the agent takes
+  requests the hub routes to it (hub-ranked dispatch), at most ``daily_cap``
+  (1-200) a day. User JWT only (``user_only`` [403] for any agent token): it
+  lets strangers' requests reach the agent unasked. An enabled channel is
+  registered again so the listing's ``accepts_dispatch`` reaches the hub.
 - ``GET · POST · DELETE …/blocked_deployments``: deployments blocked from
   this agent, by GENESIS fingerprint (a current fingerprint is resolved
   through the pins), so a block survives the blocked deployment's rotation.
@@ -48,11 +53,12 @@ from clawmeets.models.agent import Agent
 from clawmeets.server.agent_visibility import local_conversation_count, set_agent_public
 from clawmeets.server.channels.config import HUB_OFF
 from clawmeets.server.channels.hub_store import HubStore
-from clawmeets.server.hub.adapter import disable_locally, next_local_midnight
+from clawmeets.server.hub.adapter import disable_locally, local_day, next_local_midnight
 from clawmeets.server.hub.browser import (
     BlockedList,
     BlockRequest,
     DisableRequest,
+    DispatchSettingsRequest,
     EnableRequest,
     EnrollConfirm,
     EnrollRequest,
@@ -101,7 +107,8 @@ def create_hub_channels_router(ctx: "ServerContext") -> APIRouter:
         now = _now()
         return channel_out(HUB_OFF, None, link="off", agent=agent, state=state, open_conversations=threads,
                            in_flight_messages=rows, next_midnight=next_local_midnight(now), now=now,
-                           local_conversations=local_conversation_count(ctx.model_ctx, agent))
+                           local_conversations=local_conversation_count(ctx.model_ctx, agent),
+                           dispatched_today=hub.dispatch_count(agent.id, local_day(now)) if hub else 0)
 
     def _genesis(hub: HubStore, fingerprint: str) -> str:
         if not FINGERPRINT_RE.fullmatch(fingerprint or ""):
@@ -192,6 +199,30 @@ def create_hub_channels_router(ctx: "ServerContext") -> APIRouter:
         # Off is private: nobody else can message it any more, and owner
         # isolation (which needs a public agent) is turned off with it.
         await set_agent_public(ctx, agent, False)
+        return _view(agent)
+
+    @router.put("/me/channels/hub/{agent_full_name}/dispatch", response_model=HubChannel)
+    async def set_dispatch(agent_full_name: str, body: DispatchSettingsRequest,
+                           authorization: str = Header(default="")):
+        user = await _enrolling_user(authorization)            # user JWT only, never an agent token
+        agent = Agent.get_by_name(agent_full_name, ctx.model_ctx)
+        if agent is None:
+            raise HubError("agent_not_found", "no such agent")
+        if agent.registered_by != user.id:
+            raise HubError("not_owner", "this agent is someone else's")
+        runtime = ctx.hub_runtime
+        hub = _hub()
+        if hub is None:
+            raise HubError("hub_off_on_server", "the hub is off on this server")
+        state = hub.channel_state(agent.id)
+        if state is None or state.connection_id is None:
+            if runtime is None:
+                raise HubError("hub_off_on_server", "the hub is off on this server")
+            runtime.adapter.ensure_connection(agent)           # the setting hangs on the channel row
+        changed = state is None or state.accept_dispatch != body.accept
+        state = hub.set_dispatch(agent.id, accept=body.accept, daily_cap=body.daily_cap, now=_now())
+        if runtime is not None and changed and state is not None and state.enabled:
+            runtime.adapter.track(runtime.adapter.register(agent.id))   # the listing says it now
         return _view(agent)
 
     @router.get("/me/channels/hub/{agent_full_name}/blocked_deployments", response_model=BlockedList)

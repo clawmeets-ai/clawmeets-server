@@ -161,6 +161,13 @@ def display_label(agent_name: str, deployment_name: str) -> str:
     return f"{agent_name}@{deployment_name}"
 
 
+# The message id of one hub-dispatched copy of an ask: the first 32 hex chars of
+# sha256("{ask_id}:{slot}"). Both ends derive it, so the hub's route row, the
+# host's dedupe and the requester's delivery probe all name the same message.
+def dispatched_message_id(ask_id: str, slot: str) -> str:
+    return hashlib.sha256(f"{ask_id}:{slot}".encode("utf-8")).hexdigest()[:32]
+
+
 # HMAC-SHA256(secret, user_id) as lowercase hex. The secret is the deployment's
 # reporter secret (>= 32 bytes) and never leaves it, so the hub can neither
 # recover a user id nor link one user across deployments.

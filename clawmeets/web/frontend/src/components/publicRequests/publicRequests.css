@@ -165,11 +165,6 @@
 .pr-kv .k { font-size: 10.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
 .pr-kv .v { font-size: 14px; font-weight: 800; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pr-kv .m { font-size: 11.5px; color: var(--ink-3); }
-.pr-why { border: 1px solid var(--line-1); border-radius: var(--r-md); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; background: var(--bg-rail); }
-.pr-wr { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; font-size: 13px; }
-.pr-wr span:first-child { color: var(--ink-3); font-weight: 700; }
-.pr-wr .hit { color: var(--ink-1); font-weight: 700; }
-.pr-wr .miss { color: var(--ink-4); }
 .pr-dacts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .pr-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; border-radius: 999px; padding: 3px 10px;
   background: var(--bg-pill-muted); color: var(--ink-2); }
@@ -207,3 +202,9 @@
   .pr-ans { padding: 14px; }
   .pr-thread, .pr-compose { padding-left: 14px; padding-right: 14px; }
 }
+
+/* Hub-ranked dispatch */
+.pr-fit { display: block; font-size: 11px; color: var(--ink-3); }
+.pr-used { font-size: 12px; font-weight: 600; color: var(--accent); align-self: center; }
+.pr-disclosure { margin: 8px 2px 0; font-size: 12px; color: var(--ink-3); }
+.pr-assistant { margin: 16px 0; }

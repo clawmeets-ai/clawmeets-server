@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  createPublicRequest, getPublicRequest, listPublicRequests, sendDMMessage, sendPublicRequest,
+  createPublicRequest, getPublicRequest, listPublicRequests, reportMatchOutcome, sendDMMessage, sendPublicRequest,
   setMatchDismissed, type PublicRequest, type RequestMatch,
 } from '../api/endpoints'
 import { useWebSocketStatus } from './useWebSocket'
 import { sendHubDraft } from './useHub'
 
 /**
- * Public requests. The server ranks and reports each match's status; a
+ * Public requests. The hub ranks; the server reports each match's status; a
  * changelog push on any thread refreshes them (useWebSocket), so these only
  * poll while the socket is down.
  */
@@ -56,7 +56,7 @@ export function useCreatePublicRequest() {
 export function useSendPublicRequest(id: string) {
   const store = useStoreRequest()
   return useMutation({
-    mutationFn: (body: { count?: number; agent_refs?: string[] }) => sendPublicRequest(id, body),
+    mutationFn: (body: { count?: number }) => sendPublicRequest(id, body),
     onSuccess: store,
   })
 }
@@ -66,6 +66,15 @@ export function useSetMatchDismissed(id: string) {
   return useMutation({
     mutationFn: ({ agentRef, dismissed }: { agentRef: string; dismissed: boolean }) =>
       setMatchDismissed(id, agentRef, dismissed),
+    onSuccess: store,
+  })
+}
+
+/** "Use this answer": marks the match used; the server reports it to the hub. */
+export function useMarkAnswerUsed(id: string) {
+  const store = useStoreRequest()
+  return useMutation({
+    mutationFn: (agentRef: string) => reportMatchOutcome(id, agentRef, 'used'),
     onSuccess: store,
   })
 }

@@ -12,6 +12,7 @@ import HubTurnOffDialog from './HubTurnOffDialog'
 import HubEnrollmentDialog from '../../hub/HubEnrollmentDialog'
 import ChannelIsolationLine from './ChannelIsolationLine'
 import IsolationRecheckButton from './IsolationRecheckButton'
+import HubDispatchSetting from './HubDispatchSetting'
 
 /**
  * The Hub tab's own card: the switch that lists this agent on the ClawMeets
@@ -238,6 +239,8 @@ export default function HubChannelCard({ agentId, agentFullName }: { agentId: st
         {ch.isolation !== undefined && ch.isolation !== 'sandboxed' && (
           <IsolationRecheckButton agentId={agentId} onDone={refetchChannel} />
         )}
+
+        {ch.enabled && <HubDispatchSetting channel={ch} agentFullName={agentFullName} />}
 
         {stillWaiting && (
           <div className="flex items-center gap-3 text-xs text-gray-600">

@@ -2,14 +2,21 @@
 """
 clawmeets/models/public_request.py
 
-A user's public request: one plain-words ask, the public agents the server
-ranked for it, and which of them it was sent to.
+A user's public request: one plain-words ask, the agents the hub picked for
+it, and what happened with each.
 
 Each sent match points at the ordinary thread that carries the conversation
 (a same-server Front Desk thread or a hub thread), so answers and replies live
 where every other conversation lives. This record holds only what no thread
-knows: the ranking at the time of asking, who was sent to, and what the user
-dismissed. The agent card is snapshotted so the list reads the same later.
+knows: the hub's picks at the time of asking, who was sent to, and what the
+user dismissed or used. The agent card is snapshotted so the list reads the
+same later.
+
+The hub is the only ranker. Each hub match's thread is the ask's
+pre-committed slot, ``p_fit`` is the hub's estimate that the agent can help
+(``fit`` is the same as a whole percent), and ``answer_yourself`` means no
+agent clearly fit so the user's own assistant got the request, in
+``fallback_project_id``.
 
 Persisted one file per request at
 ``{server_dir}/public-requests/<user_id>/<request_id>.json``.
@@ -21,7 +28,7 @@ import uuid
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from clawmeets.utils.file_io import FileUtil
 
@@ -47,16 +54,25 @@ class RequestMatch(BaseModel):
     teams: list[str] = Field(default_factory=list)
     retained_count: int = 0
     online: bool = False
+    #: ``p_fit`` as a whole percent, and the hub's rank score.
     fit: int
-    rep: int
     score: float
-    why: dict[str, list[str]] = Field(default_factory=dict)
     #: The thread the request went out on; None until sent.
     project_id: Optional[str] = None
     sent_at: Optional[float] = None
     #: Why sending failed (an error code), when it did.
     send_error: Optional[str] = None
     dismissed: bool = False
+    #: The ask slot (= the thread's project id for a hub agent), the ask and
+    #: plan that picked it, and the hub's fit estimate (0..1).
+    slot: Optional[str] = None
+    ask_id: Optional[str] = None
+    plan_id: Optional[str] = None
+    p_fit: Optional[float] = None
+    #: The user picked this agent's answer ("Use this answer").
+    used: bool = False
+    #: Outcome kinds already reported to the hub for this match.
+    outcomes_reported: list[str] = Field(default_factory=list)
 
 
 class PublicRequest(BaseModel):
@@ -66,6 +82,14 @@ class PublicRequest(BaseModel):
     created_at: float
     #: Rank order, best first. Never reordered after creation.
     matches: list[RequestMatch] = Field(default_factory=list)
+    #: The first ask and its plan.
+    ask_id: Optional[str] = None
+    plan_id: Optional[str] = None
+    #: No agent clearly fit: the request went to the user's own assistant.
+    answer_yourself: bool = False
+    fallback_project_id: Optional[str] = None
+    #: The assistant that got it (its DM thread is ``fallback_project_id``).
+    fallback_agent_name: Optional[str] = None
 
     def match(self, agent_ref: str) -> Optional[RequestMatch]:
         return next((m for m in self.matches if m.agent_ref == agent_ref), None)
@@ -102,7 +126,11 @@ def list_for(base_dir: Path, user_id: str) -> list[PublicRequest]:
         if not name.endswith(".json"):
             continue
         data = FileUtil.read(folder / name, "json")
-        if isinstance(data, dict):
+        if not isinstance(data, dict):
+            continue
+        try:
             out.append(PublicRequest.model_validate(data))
+        except ValidationError:
+            continue                                # a record this build cannot read
     out.sort(key=lambda r: r.created_at, reverse=True)
     return out

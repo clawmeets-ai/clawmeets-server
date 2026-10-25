@@ -55,6 +55,20 @@ later) goes now or on the next connect. Reply rows already queued drain for
 10 minutes after ``disabled_at`` and then fail ``channel_disabled``; with
 ``stop_now`` they fail at once.
 
+**Hub-dispatched asks** (``on_dispatch_deliver``). The hub may route one
+requester's signed ``DispatchAsk`` to an agent here with its own
+``DispatchStamp`` naming that agent and one of the ask's slots. The stamp must
+verify under a trusted hub key over the ask's signature (else dropped), the
+ask under the requester's pinned chain (else ``sender_untrusted``), the stamp
+must name this deployment, a slot of the ask and the slot's derived message id,
+and the ask must not have expired (``stale``). The agent's owner must have
+opted in (``not_accepting`` / ``dispatch_not_accepted``), and one of its
+``dispatch_daily_cap`` slots for the local day is claimed in the accept
+transaction (``dispatch_cap_reached`` once spent; a duplicate never counts).
+The ask then becomes the same ``_Inbound`` an envelope would give
+(``requester_project_id`` = the slot) and takes the path above unchanged:
+from there on it is an ordinary hub conversation.
+
 **Replies** (``prepare_relay``) are signed once, at their first relay, by the
 agent's key, carrying its full certificate, and answer (``in_reply_to``) the
 newest message of the conversation.
@@ -87,6 +101,7 @@ from clawmeets.hub_protocol.canonical import (
 )
 from clawmeets.hub_protocol.codes import DeliverResult, ErrorCode, NotAcceptingDetail, UnregisterReason
 from clawmeets.hub_protocol.constants import (
+    CLOCK_SKEW_S,
     FILE_HEADER_BYTES,
     MAX_ENVELOPE_AGE_S,
     MAX_ENVELOPE_BYTES,
@@ -99,10 +114,13 @@ from clawmeets.hub_protocol.text import TextField, clean_remote_text
 from clawmeets.hub_protocol.frames import (
     AgentUnregister,
     DeliverAck,
+    DispatchAsk,
+    DispatchStamp,
     Listing,
     ParsedFrame,
     sign_listing,
 )
+from clawmeets.hub_protocol.ids import dispatched_message_id
 from clawmeets.models.agent import Agent
 from clawmeets.server.channels import access
 from clawmeets.server.channels.adapter import InboundEvent, Parked, Refused, RelayOutcome, VerifiedHubEvent
@@ -129,7 +147,7 @@ from clawmeets.utils.file_io import FileUtil
 
 from . import keys
 from .browser import DAILY_RUN_CAP, HubError
-from .trust import verify_deliver_route
+from .trust import verify_deliver_route, verify_dispatch_deliver_stamp
 
 if TYPE_CHECKING:
     from .runtime import HubRuntime
@@ -210,6 +228,9 @@ class _Inbound:
     pin: Pin
     channel: HubChannelState
     agent: Agent
+    #: A hub-dispatched ask (``on_dispatch_deliver``), not a relayed envelope:
+    #: the owner's opt-in and the dispatch daily cap apply too.
+    dispatched: bool = False
 
     @property
     def event_id(self) -> str:
@@ -383,6 +404,8 @@ class HubAdapter:
             capabilities=[c[:32] for c in capabilities][:12],
             needs_approval=mode != access.MODE_ANYONE,
             accepting_messages=self.runtime.mode == "full",
+            # Sent only when on, so a listing that never opted in keeps its bytes.
+            accepts_dispatch=True if state.accept_dispatch else None,
         )
         return to_wire(listing)
 
@@ -736,6 +759,75 @@ class HubAdapter:
             await self._ack(message_id, sender, AckFields(
                 result=DeliverResult.NOT_ACCEPTING.value, detail=NotAcceptingDetail.BROWSE_ONLY.value))
 
+    async def on_dispatch_deliver(self, parsed: ParsedFrame, *, browse_only: bool = False) -> None:
+        """One ``dispatch_deliver`` frame (see "Hub-dispatched asks" in the
+        module docstring). Nothing is stored before every check passed."""
+        data = parsed.data
+        raw_ask, raw_stamp = data.get("ask"), data.get("stamp")
+        if not isinstance(raw_ask, Mapping) or not isinstance(raw_stamp, Mapping):
+            return
+        if not verify_dispatch_deliver_stamp(data, hub=self.hub, config=self.config, now=self._now()):
+            logger.warning("Hub dispatch_deliver with a stamp that does not verify: dropped")
+            return
+        try:
+            stamp = DispatchStamp.model_validate(raw_stamp)
+        except ValidationError:
+            logger.warning("Hub dispatch stamp does not fit its schema: dropped")
+            return
+        sender = raw_ask.get("from_deployment")
+        if not isinstance(sender, str):
+            return
+        try:
+            inbound = await self._verify_dispatched(raw_ask, stamp)
+        except _Untrusted as refused:
+            logger.warning("Hub dispatched ask refused (%s): %s; nothing stored", refused.result, refused)
+            await self._ack(stamp.message_id, sender, AckFields(result=refused.result))
+            return
+        await self._accept(inbound, browse_only=browse_only)
+
+    async def _verify_dispatched(self, raw_ask: Mapping[str, Any], stamp: DispatchStamp) -> _Inbound:
+        """The ask under the requester's pinned chain, and the stamp against
+        the ask and this deployment; then the ``_Inbound`` its envelope twin
+        would give."""
+        identity = self.runtime.identity()
+        if identity is None:
+            raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "no registration here")
+        pin = await self._sender_pin(raw_ask)
+        if not verify_object(raw_ask, pin.pubkey, purpose=Purpose.DISPATCH_ASK):
+            raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "the ask's signature does not verify")
+        try:
+            ask = DispatchAsk.model_validate(raw_ask)
+        except ValidationError:
+            raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "the ask does not fit") from None
+        if ask.aud != self.config.hub_url:
+            raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "the ask is for another hub")
+        if stamp.to_deployment != identity.deployment_id:
+            raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "the stamp names another deployment")
+        if (stamp.ask_id != ask.ask_id or stamp.slot not in ask.slots
+                or stamp.message_id != dispatched_message_id(ask.ask_id, stamp.slot)):
+            raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "the stamp does not fit the ask")
+        now = self._now()
+        # The same window the hub checks: an ask dated in the future would
+        # otherwise stay live here for as long as its sender's clock says.
+        if now >= ask.expires_at or ask.sent_at - now > CLOCK_SKEW_S:
+            raise _Untrusted(DeliverResult.STALE.value, "the ask has expired or is dated in the future")
+        found = self.channel_for_agent_name(stamp.to_agent)
+        if found is None:
+            raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "no such agent here")
+        try:
+            envelope = Envelope.model_validate({
+                "v": ask.v, "type": "message", "aud": ask.aud, "message_id": stamp.message_id,
+                "from_deployment": ask.from_deployment, "from_fingerprint": ask.from_fingerprint,
+                "from_principal": dict(raw_ask["from_principal"]), "to_deployment": stamp.to_deployment,
+                "to_agent": stamp.to_agent, "requester_project_id": stamp.slot,
+                "conversation_key": f"{pin.genesis_fp}/{stamp.slot}", "sent_at": ask.sent_at,
+                "body": {"text": ask.text},
+            })
+        except ValidationError:
+            raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "the ask does not make a message") from None
+        return _Inbound(envelope=envelope, raw=raw_ask, pin=pin, channel=found[0], agent=found[1],
+                        dispatched=True)
+
     def expect_files(self, parsed: ParsedFrame) -> None:
         """Called as the deliver frame is read, before anything awaits: its
         file chunks follow it on the socket and must find a place. Only in
@@ -774,11 +866,11 @@ class HubAdapter:
             return pin.genesis_fp, True
         return None
 
-    async def _verify(self, raw: Mapping[str, Any]) -> _Inbound:
-        identity = self.runtime.identity()
+    async def _sender_pin(self, raw: Mapping[str, Any]) -> Pin:
+        """The live pin of the key ``raw`` names (``from_fingerprint``) for the
+        deployment it names (``from_deployment``); a first contact is looked
+        up and pinned. ``_Untrusted`` otherwise."""
         client = self.runtime.client
-        if identity is None:
-            raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "no registration here")
         fp, sender = raw.get("from_fingerprint"), raw.get("from_deployment")
         try:
             pin = self.hub.pin_for(fp) if isinstance(fp, str) else None
@@ -793,6 +885,13 @@ class HubAdapter:
             raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "the signer is not pinned for the sender")
         if pin.revoked_at is not None or pin.identity_changed_at is not None:
             raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "the signer's identity is revoked")
+        return pin
+
+    async def _verify(self, raw: Mapping[str, Any]) -> _Inbound:
+        identity = self.runtime.identity()
+        if identity is None:
+            raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "no registration here")
+        pin = await self._sender_pin(raw)
         if not verify_object(raw, pin.pubkey, purpose=Purpose.ENVELOPE):
             raise _Untrusted(DeliverResult.SENDER_UNTRUSTED.value, "the signature does not verify")
         try:
@@ -825,6 +924,11 @@ class HubAdapter:
             return (Outcome.NOT_ACCEPTING, NotAcceptingDetail.BROWSE_ONLY.value)
         if self._cap_reached(state):
             return (Outcome.NOT_ACCEPTING, NotAcceptingDetail.DAILY_CAP.value)
+        if inbound.dispatched:
+            if not state.accept_dispatch:
+                return (Outcome.NOT_ACCEPTING, NotAcceptingDetail.DISPATCH_NOT_ACCEPTED.value)
+            if self.hub.dispatch_count(state.agent_id, local_day(self._now())) >= state.dispatch_daily_cap:
+                return (Outcome.NOT_ACCEPTING, NotAcceptingDetail.DISPATCH_CAP_REACHED.value)
         return None
 
     def _cap_reached(self, state: HubChannelState) -> bool:
@@ -832,6 +936,8 @@ class HubAdapter:
         return not fresh and state.runs_today >= state.daily_run_cap
 
     def _retry_after(self, state: HubChannelState, detail: Optional[str]) -> Optional[int]:
+        if detail == NotAcceptingDetail.DISPATCH_CAP_REACHED.value:
+            return max(1, int(next_local_midnight(self._now()) - self._now()))
         if detail != NotAcceptingDetail.DAILY_CAP.value:
             return None
         current = self.hub.channel_state(state.agent_id) or state
@@ -856,6 +962,31 @@ class HubAdapter:
             return None
 
         return gate
+
+    def _dispatch_gate(self, agent_id: str, gate):
+        """``gate`` (a run or Request gate) for a hub-dispatched ask: the
+        day's dispatch cap is checked first, then ``gate``, and only when both
+        pass is one dispatch slot taken, in the same transaction, so a refusal
+        never spends one and a duplicate never reaches here."""
+        day = local_day(self._now())
+
+        def dispatch_gate(db, *args) -> Optional[str]:
+            row = db.execute("SELECT accept_dispatch, dispatch_daily_cap FROM hub_channels WHERE agent_id = ?",
+                             (agent_id,)).fetchone()
+            if row is None or not row[0]:
+                return NotAcceptingDetail.DISPATCH_NOT_ACCEPTED.value
+            taken = db.execute("SELECT count FROM hub_dispatch_counts WHERE agent_id = ? AND day = ?",
+                               (agent_id, day)).fetchone()
+            if taken is not None and taken[0] >= row[1]:
+                return NotAcceptingDetail.DISPATCH_CAP_REACHED.value
+            refusal = gate(db, *args)
+            if refusal is not None:
+                return refusal
+            if HubStore.take_dispatch_slot(db, agent_id, day) is None:
+                return NotAcceptingDetail.DISPATCH_CAP_REACHED.value
+            return None
+
+        return dispatch_gate
 
     def _request_gate(self, inbound: _Inbound):
         """The fill rule for this sender's root (see the module docstring)."""
@@ -896,10 +1027,14 @@ class HubAdapter:
         # (a message with files waits up to a minute for them).
         inbound = replace(inbound, channel=self.hub.channel_state(state.agent_id) or state)
         refuse = self._refusal(inbound, browse_only=browse_only)
+        request_gate, accept_gate = self._request_gate(inbound), self._run_gate(state.agent_id)
+        if inbound.dispatched:
+            request_gate = self._dispatch_gate(state.agent_id, request_gate)
+            accept_gate = self._dispatch_gate(state.agent_id, accept_gate)
         try:
             [decision] = await self.runtime.gateway.handle_hub_events(connection_id, [VerifiedHubEvent(
                 event=event, root_fp=inbound.pin.genesis_fp, refuse=refuse,
-                request_gate=self._request_gate(inbound), accept_gate=self._run_gate(state.agent_id),
+                request_gate=request_gate, accept_gate=accept_gate,
             )])
         except KeyError:
             await self._ack(env.message_id, env.from_deployment,
@@ -1280,6 +1415,12 @@ class HubAdapter:
         for connection_id, event_id in dropped:
             shutil.rmtree(self._staging(connection_id, event_id), ignore_errors=True)
         return len(dropped)
+
+
+def local_day(now: float) -> str:
+    """The server's local date at ``now`` (``YYYY-MM-DD``): the day a
+    dispatch slot counts against, reset at ``next_local_midnight``."""
+    return datetime.fromtimestamp(now).astimezone().strftime("%Y-%m-%d")
 
 
 def next_local_midnight(now: float) -> float:

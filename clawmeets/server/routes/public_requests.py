@@ -2,17 +2,27 @@
 """
 clawmeets/server/routes/public_requests.py
 
-Public requests: the user asks once in plain words, the server ranks every
-public agent for it and sends it to the best few. User JWT only: a request is
-sent as the user.
+Public requests: the user asks once in plain words, the best few public
+agents get it. User JWT only: a request is sent as the user.
 
-- ``POST /me/public-requests`` ``{text, send_count}``: rank, store, send to
-  the top ``send_count``. Answers the full request.
+The hub ranks and delivers (``dispatch.ask_hub``: at most three agents, or
+the user's own assistant when none clearly fits). Nothing else ranks: with
+no plan the route answers ``{"detail": {"code", "message"}}`` and stores
+nothing -- ``hub_required`` [409] (this server is not on the hub),
+``hub_unavailable`` [503] (the hub cannot rank right now) or
+``rate_limited`` [429, ``retry_after`` when known].
+
+- ``POST /me/public-requests`` ``{text, send_count}``: ask the hub, store,
+  send to its picks (at most three). Answers the full request.
 - ``GET /me/public-requests``: summaries, newest first.
 - ``GET /me/public-requests/{id}``: the full request with each match's status.
-- ``POST /me/public-requests/{id}/send`` ``{count?, agent_refs?}``: send to
-  the named matches, else to the next ``count`` unsent ones ("load more").
-- ``PUT|DELETE /me/public-requests/{id}/dismissed/{agent_ref}``.
+- ``POST /me/public-requests/{id}/send`` ``{count?}``: "ask for more", a new
+  ask for up to ``count`` agents that excludes everyone already asked.
+- ``POST /me/public-requests/{id}/outcome`` ``{agent_ref, kind}``: the user
+  used that agent's answer (``used``) or asked again (``redone``); reported
+  to the hub, ids only.
+- ``PUT|DELETE /me/public-requests/{id}/dismissed/{agent_ref}`` (a dismiss is
+  reported to the hub too).
 
 Replies go to each match's thread through the routes every thread uses;
 retaining goes through ``/api/hub/agents/{agent_ref}/retain``.
@@ -22,31 +32,35 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import defaultdict
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 from fastapi import APIRouter, Body, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from clawmeets.hub_protocol.constants import MAX_DISPATCH_SLOTS
 from clawmeets.models import public_request as store
 from clawmeets.models.public_request import PublicRequest, RequestMatch
 from clawmeets.server.agent_visibility import retainers_of
-from clawmeets.server.public_requests import dispatch, ranking
-from clawmeets.server.public_requests.candidates import hub_candidates, local_candidates
+from clawmeets.server.public_requests import dispatch
 
 if TYPE_CHECKING:
     from clawmeets.server.context import ServerContext
 
-DEFAULT_SEND = 3
+DEFAULT_SEND = MAX_DISPATCH_SLOTS
 
 
 class CreateRequestBody(BaseModel):
     text: str = Field(max_length=store.MAX_TEXT)
-    send_count: int = Field(DEFAULT_SEND, ge=1, le=ranking.MAX_MATCHES)
+    send_count: int = Field(DEFAULT_SEND, ge=1, le=MAX_DISPATCH_SLOTS)
 
 
 class SendBody(BaseModel):
-    count: Optional[int] = Field(None, ge=1, le=ranking.MAX_MATCHES)
-    agent_refs: Optional[list[str]] = None
+    count: int = Field(DEFAULT_SEND, ge=1, le=MAX_DISPATCH_SLOTS)
+
+
+class OutcomeBody(BaseModel):
+    agent_ref: str
+    kind: Literal["used", "redone"]
 
 
 class MatchOut(RequestMatch):
@@ -66,6 +80,10 @@ class RequestSummary(BaseModel):
 
 class RequestOut(RequestSummary):
     matches: list[MatchOut]
+    answer_yourself: bool = False
+    #: The assistant DM thread that got the request when no agent fit.
+    fallback_project_id: Optional[str] = None
+    fallback_agent_name: Optional[str] = None
 
 
 def create_public_requests_router(ctx: "ServerContext") -> APIRouter:
@@ -87,6 +105,9 @@ def create_public_requests_router(ctx: "ServerContext") -> APIRouter:
             id=request.id, text=request.text, created_at=request.created_at,
             matched=len(matches), sent=sum(1 for m in matches if m.status != "not_sent"),
             responded=sum(1 for m in matches if m.status == "responded"), matches=matches,
+            answer_yourself=request.answer_yourself,
+            fallback_project_id=request.fallback_project_id,
+            fallback_agent_name=request.fallback_agent_name,
         )
 
     def _load(user_id: str, request_id: str) -> PublicRequest:
@@ -95,33 +116,16 @@ def create_public_requests_router(ctx: "ServerContext") -> APIRouter:
             raise HTTPException(404, "No such request")
         return request
 
-    async def _send(user, request: PublicRequest, matches: list[RequestMatch]) -> None:
-        await asyncio.gather(*(dispatch.send(ctx, user, request, m) for m in matches))
-
     @router.post("/me/public-requests", response_model=RequestOut, status_code=201)
     async def create_request(body: CreateRequestBody, authorization: str = Header(default="")):
         user = await ctx.auth.get_current_user(authorization)
         text = body.text.strip()
         if not text:
             raise HTTPException(400, "Write what you need done first")
-        shaped = local_candidates(ctx, user) + await hub_candidates(ctx, user, text)
-        by_ref = {s.candidate.agent_ref: s for s in shaped}
-        matches = []
-        for r in ranking.rank((s.candidate for s in shaped), text):
-            s = by_ref[r.candidate.agent_ref]
-            c = r.candidate
-            matches.append(RequestMatch(
-                agent_ref=c.agent_ref, kind=s.kind, agent_id=s.agent_id, name=c.name,
-                display_name=s.display_name, owner=s.owner, deployment_name=s.deployment_name,
-                description=c.description, expertise=list(c.expertise), teams=list(c.teams),
-                retained_count=c.retained_count, online=c.online,
-                fit=r.fit, rep=r.rep, score=r.score, why=r.why,
-            ))
-        request = PublicRequest(id=store.new_id(), user_id=user.id, text=text,
-                                created_at=time.time(), matches=matches)
+        request = PublicRequest(id=store.new_id(), user_id=user.id, text=text, created_at=time.time())
         async with locks[user.id]:
-            store.save(base_dir, request)
-            await _send(user, request, matches[:body.send_count])
+            # Raises (and nothing is stored) when the hub gives no plan.
+            await dispatch.ask_hub(ctx, user, request, limit=body.send_count)
             store.save(base_dir, request)
         return _out(request)
 
@@ -145,17 +149,10 @@ def create_public_requests_router(ctx: "ServerContext") -> APIRouter:
         user = await ctx.auth.get_current_user(authorization)
         async with locks[user.id]:
             request = _load(user.id, request_id)
-            if body.agent_refs:
-                picked = []
-                for ref in body.agent_refs:
-                    match = request.match(ref)
-                    if match is None:
-                        raise HTTPException(404, f"{ref!r} is not a match for this request")
-                    picked.append(match)
-            else:
-                unsent = [m for m in request.matches if m.project_id is None and m.send_error is None]
-                picked = unsent[:body.count or DEFAULT_SEND]
-            await _send(user, request, picked)
+            # A new ask, never anyone already asked; on failure the stored
+            # request is left as it was.
+            await dispatch.ask_hub(ctx, user, request, limit=body.count,
+                                   exclude=[m.agent_ref for m in request.matches])
             store.save(base_dir, request)
         return _out(request)
 
@@ -167,6 +164,30 @@ def create_public_requests_router(ctx: "ServerContext") -> APIRouter:
             if match is None:
                 raise HTTPException(404, f"{agent_ref!r} is not a match for this request")
             match.dismissed = value
+            if value:
+                _report(user, request, match, "dismissed")
+            store.save(base_dir, request)
+        return _out(request)
+
+    def _report(user, request: PublicRequest, match: RequestMatch, kind: str) -> None:
+        event = dispatch.outcome_events(request, match, kind)
+        if event is not None:
+            match.outcomes_reported.append(kind)
+            dispatch.report_soon(ctx, user, request, [event])
+
+    @router.post("/me/public-requests/{request_id}/outcome", response_model=RequestOut)
+    async def outcome(request_id: str, body: OutcomeBody, authorization: str = Header(default="")):
+        user = await ctx.auth.get_current_user(authorization)
+        async with locks[user.id]:
+            request = _load(user.id, request_id)
+            match = request.match(body.agent_ref)
+            if match is None:
+                raise HTTPException(404, f"{body.agent_ref!r} is not a match for this request")
+            if body.kind == "used":
+                if match.project_id is None:
+                    raise HTTPException(409, "That agent has not been sent this request")
+                match.used = True
+            _report(user, request, match, body.kind)
             store.save(base_dir, request)
         return _out(request)
 

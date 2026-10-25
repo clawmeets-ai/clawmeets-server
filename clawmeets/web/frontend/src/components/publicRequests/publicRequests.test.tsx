@@ -1,26 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { ApiError } from '../../api/client'
 import type { PublicRequest, RequestMatch } from '../../api/endpoints/publicRequests'
 import type { ChatLogEntry } from '../../types'
+import { MemoryRouter } from 'react-router-dom'
 import RequestRoom from './RequestRoom'
+import RequestHome from './RequestHome'
 import ProgressBoard from './ProgressBoard'
-import { rowState } from './requestCopy'
+import { askErrorMessage, COPY, fitLabel, rowState } from './requestCopy'
 
 /**
- * The request room: the ranked list keeps server order, the first agent to
- * answer is shown first, arrows move between agents, "load more" and "send
- * my request" go to the send route, and the answer is the agent's first
- * message on its thread.
+ * The request room: the ranked list keeps the hub's order, the first agent
+ * to answer is shown first, arrows move between agents, "ask for more" goes
+ * to the send route, the answer is the agent's first message on its thread,
+ * and a request the hub could not take says why.
  */
 
 const send = vi.fn()
 const dismiss = vi.fn()
+const markUsed = vi.fn()
 let messagesByProject: Record<string, ChatLogEntry[]> = {}
 let retainedRefs: string[] = []
+let sendError: unknown = null
+let createError: unknown = null
 
 vi.mock('../../hooks/usePublicRequests', () => ({
-  useSendPublicRequest: () => ({ mutate: send, isPending: false }),
+  useSendPublicRequest: () => ({ mutate: send, isPending: false, isError: sendError !== null, error: sendError }),
   useSetMatchDismissed: () => ({ mutate: dismiss, isPending: false }),
+  useMarkAnswerUsed: () => ({ mutate: markUsed, isPending: false }),
+  useCreatePublicRequest: () => ({ mutate: vi.fn(), isPending: false, isError: createError !== null, error: createError }),
   useReplyToMatch: () => ({ mutateAsync: vi.fn(() => Promise.resolve()), isPending: false, isError: false }),
 }))
 vi.mock('../../hooks/useAgentAccess', () => ({
@@ -43,7 +51,7 @@ function match(ref: string, over: Partial<RequestMatch> = {}): RequestMatch {
   return {
     agent_ref: ref, kind: 'local', agent_id: `id-${ref}`, name: ref, display_name: ref, owner: 'seller',
     deployment_name: null, description: `${ref} does things`, expertise: ['valuation'], teams: [],
-    retained_count: 3, online: true, fit: 60, rep: 7, score: 49.4, why: { Expertise: ['valuation'] },
+    retained_count: 3, online: true, fit: 60, score: 0.49,
     project_id: `p-${ref}`, sent_at: 1, send_error: null, dismissed: false, status: 'working', responded_at: null,
     ...over,
   }
@@ -68,13 +76,19 @@ const activeName = () => within(screen.getByTestId('agent-panel')).getByRole('he
 beforeEach(() => {
   send.mockReset()
   dismiss.mockReset()
+  markUsed.mockReset()
   messagesByProject = {}
   retainedRefs = []
+  sendError = null
+  createError = null
 })
+
+const hubFailure = (status: number, code: string) =>
+  new ApiError(status, '[object Object]', { detail: { code, message: 'from the server' } })
 afterEach(cleanup)
 
 describe('RequestRoom', () => {
-  it('keeps server rank order and opens on the first agent to respond', () => {
+  it('keeps the hub\'s rank order and opens on the first agent to respond', () => {
     render(<RequestRoom drawerOpen={false} onOpenAgent={() => {}} request={request([
       match('alpha'),
       match('beta', { status: 'responded', responded_at: 200 }),
@@ -98,21 +112,22 @@ describe('RequestRoom', () => {
     expect(activeName()).toBe('alpha')
   })
 
-  it('load more sends to the next three; send my request names the agent', () => {
+  it('ask for more is a new ask for three; an agent it could not reach has no send button', () => {
     render(<RequestRoom drawerOpen={false} onOpenAgent={() => {}} request={request([
       match('alpha'),
-      match('beta', { status: 'not_sent', project_id: null, sent_at: null }),
+      match('beta', { status: 'not_sent', project_id: null, sent_at: null, send_error: 'send_failed' }),
     ])} />)
-    fireEvent.click(screen.getByTestId('load-more'))
+    fireEvent.click(screen.getByTestId('ask-more'))
     expect(send).toHaveBeenCalledWith({ count: 3 })
     fireEvent.click(rows()[1])
-    fireEvent.click(screen.getByTestId('send-to-agent'))
-    expect(send).toHaveBeenLastCalledWith({ agent_refs: ['beta'] })
+    expect(screen.getByTestId('not-sent').textContent).toContain(COPY.sendFailed)
+    expect(screen.queryByRole('button', { name: /send my request/i })).toBeNull()
   })
 
-  it('no load-more row once every match was sent', () => {
+  it('ask for more that the hub could not take says why', () => {
+    sendError = hubFailure(503, 'hub_unavailable')
     render(<RequestRoom drawerOpen={false} onOpenAgent={() => {}} request={request([match('alpha')])} />)
-    expect(screen.queryByTestId('load-more')).toBeNull()
+    expect(screen.getByTestId('ask-error').textContent).toBe(COPY.hubUnavailable)
   })
 
   it('the answer is the agent’s first message; later ones form the thread, then typing', () => {
@@ -141,6 +156,64 @@ describe('RequestRoom', () => {
     ])} />)
     fireEvent.click(screen.getByTestId('show-again'))
     expect(dismiss).toHaveBeenLastCalledWith({ agentRef: 'alpha', dismissed: false })
+  })
+})
+
+describe('hub-ranked dispatch', () => {
+  const room = (r: PublicRequest) => render(
+    <MemoryRouter><RequestRoom drawerOpen={false} onOpenAgent={() => {}} request={r} /></MemoryRouter>,
+  )
+
+  it('use this answer on a responded match, then shows it is used', () => {
+    const { unmount } = room(request([match('alpha', { status: 'responded', responded_at: 5 })]))
+    fireEvent.click(screen.getByTestId('use-answer'))
+    expect(markUsed).toHaveBeenCalledWith('alpha')
+    unmount()
+    room(request([match('alpha', { status: 'responded', responded_at: 5, used: true })]))
+    expect(screen.queryByTestId('use-answer')).toBeNull()
+    expect(screen.getByTestId('used-answer').textContent).toBe(COPY.usedAnswer)
+  })
+
+  it('no use-this-answer before the agent answered', () => {
+    room(request([match('alpha')]))
+    expect(screen.queryByTestId('use-answer')).toBeNull()
+  })
+
+  it('nobody fits: the assistant answered, with a link to its thread, and no "no match" line', () => {
+    room({ ...request([]), answer_yourself: true, fallback_project_id: 'p-dm',
+      fallback_agent_name: 'olivia-assistant' })
+    expect(screen.getByTestId('assistant-answered').textContent).toContain(COPY.assistantAnswered)
+    expect(screen.getByTestId('open-assistant').getAttribute('href')).toBe('/dm/olivia-assistant/p-dm')
+    expect(screen.queryByText(COPY.noMatches)).toBeNull()
+  })
+
+  it('the hub fit shows in words, nothing without one', () => {
+    room(request([match('alpha', { p_fit: 0.82 }), match('beta', { p_fit: 0.3 }), match('gamma')]))
+    expect(screen.getAllByTestId('rank-fit').map((e) => e.textContent)).toEqual([COPY.fitLikely, COPY.fitPossible])
+    expect(fitLabel(match('x', { p_fit: null }))).toBeNull()
+  })
+
+  it('the request box says who sees the request', () => {
+    render(<MemoryRouter><RequestHome /></MemoryRouter>)
+    expect(screen.getByTestId('request-disclosure').textContent).toBe(
+      'Your request is shown to the hub and OpenAI to pick who can help.')
+  })
+})
+
+describe('when the hub cannot take a request', () => {
+  it('names the two causes in words, and never shows the raw detail', () => {
+    expect(askErrorMessage(hubFailure(409, 'hub_required'))).toBe(
+      'Public requests need this server to be on the ClawMeets Hub')
+    expect(askErrorMessage(hubFailure(503, 'hub_unavailable'))).toBe(
+      'Couldn’t reach the hub. Try again in a minute.')
+    expect(askErrorMessage(hubFailure(429, 'rate_limited'))).toBe(COPY.rateLimited)
+    expect(askErrorMessage(new Error('network'))).toBe(COPY.askFailed)
+  })
+
+  it('the request box shows hub_required', () => {
+    createError = hubFailure(409, 'hub_required')
+    render(<MemoryRouter><RequestHome /></MemoryRouter>)
+    expect(screen.getByTestId('ask-error').textContent).toBe(COPY.hubRequired)
   })
 })
 

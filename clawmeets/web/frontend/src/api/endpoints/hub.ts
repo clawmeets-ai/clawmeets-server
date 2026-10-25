@@ -1,4 +1,4 @@
-import { ApiError, del, get, getFile, post } from '../client'
+import { ApiError, del, get, getFile, post, put } from '../client'
 import type { Project } from '../../types'
 
 /**
@@ -133,6 +133,11 @@ export interface HubChannel {
   /** The agent is public. Off and public: shared on this server before the
    *  Hub switch became the one sharing control (the card offers Make private). */
   public?: boolean
+  /** The owner accepts requests the hub routes to this agent (hub-ranked
+   *  dispatch), at most `dispatch_daily_cap` a day; `dispatched_today` so far. */
+  accept_dispatch?: boolean
+  dispatch_daily_cap?: number
+  dispatched_today?: number
 }
 
 export interface BlockedDeployment {
@@ -550,6 +555,10 @@ export const enableHubChannel = (agentFullName: string, clientRequestId: string)
 /** `confirm` is always true: the dialog is the confirmation. */
 export const disableHubChannel = (agentFullName: string, stopNow: boolean) =>
   post<HubChannel>(`${channel(agentFullName)}/disable`, { confirm: true, stop_now: stopNow })
+
+/** PUT …/dispatch: owner's user session only (an agent token is `user_only`). */
+export const setHubDispatch = (agentFullName: string, accept: boolean, dailyCap: number) =>
+  put<HubChannel>(`${channel(agentFullName)}/dispatch`, { accept, daily_cap: dailyCap })
 
 export const getHubEnrollment = () => get<HubEnrollment>('/me/channels/hub/enrollment')
 

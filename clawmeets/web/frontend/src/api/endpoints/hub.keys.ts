@@ -80,8 +80,12 @@ export const HUB_MODEL_KEYS: Record<string, ModelKeys> = {
       'key_last4', 'rotate_by', 'last_success_at', 'next_retry_at', 'hub_url', 'hub_url_is_default',
       'open_conversations', 'in_flight_messages', 'daily_run_cap', 'runs_today', 'runs_reset_at',
       'isolation', 'held_conversations', 'local_conversations', 'owner_isolated', 'public',
+      'accept_dispatch', 'dispatch_daily_cap', 'dispatched_today',
     ],
-    optional: ['isolation', 'held_conversations', 'local_conversations', 'owner_isolated', 'public'],
+    optional: [
+      'isolation', 'held_conversations', 'local_conversations', 'owner_isolated', 'public',
+      'accept_dispatch', 'dispatch_daily_cap', 'dispatched_today',
+    ],
     nullable: [
       'status_detail', 'reject_reason', 'ineligible_reason', 'listed_as', 'key_last4', 'rotate_by',
       'last_success_at', 'next_retry_at',
@@ -257,4 +261,6 @@ export const UNMIRRORED_MODELS: readonly string[] = [
   'ClearHostRequest', 'OwnerIsolationRefusedDetail',
   // hub enrollment: request bodies, built by the call functions
   'EnrollRequest', 'EnrollConfirm',
+  // hub-ranked dispatch: the owner's switch, a request body
+  'DispatchSettingsRequest',
 ]

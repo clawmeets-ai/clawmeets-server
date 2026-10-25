@@ -26,6 +26,9 @@ one kind never verifies as another:
   key_rotate         old AND new key      KEY_ROTATE        data minus (sig_old, sig_new)
   statement          hub key `kid`        STATEMENT         data minus sig
   revoke             signer_fp's key      REVOKE            data minus sig
+  dispatch_ask       identity key         DISPATCH_ASK      data minus sig
+  dispatch_deliver.stamp  hub key `kid`   DISPATCH_STAMP    dispatch_stamp_signing_payload(stamp, ask.sig)
+  dispatch_outcome   identity key         DISPATCH_OUTCOME  data minus sig
 The agent cert (AGENT_CERT), register and verify-email bodies, and the hub key
 set (KEY_SET) follow the same rule.
 
@@ -34,7 +37,17 @@ the model, and parse a signed object only after it verified. The purpose
 comes from the type being verified (each signed model's SIGNING_PURPOSE),
 never from the message. agent_register and deliver.route sign more than the
 object (DETACHED_PAYLOAD), so verify_then_parse refuses them; check them with
-verify_listing and verify_route.
+verify_listing and verify_route. A dispatch stamp is the same: verify_dispatch_stamp.
+
+Hub-ranked dispatch. A requester signs ONE DispatchAsk carrying the request,
+an expiry and 1..MAX_DISPATCH_SLOTS reply slots: the requester_project_ids of
+the threads it will open, so the slot count caps how many agents can be asked
+and every reply still binds through today's conversation key
+``{genesis}/{slot}``. The hub ranks, answers the asker with a DispatchPlan,
+then pushes each picked host a DispatchDeliver: the ask verbatim plus a
+DispatchStamp naming one agent and one slot, signed over the ask's signature.
+The hub can choose who reads the ask but cannot alter it, extend it, or get a
+reply accepted from an agent its plan did not name.
 """
 from __future__ import annotations
 
@@ -67,17 +80,23 @@ from clawmeets.hub_protocol.canonical import (
 )
 from clawmeets.hub_protocol.codes import ErrorCode, WireCode
 from clawmeets.hub_protocol.constants import (
+    DISPATCH_TTL_S,
     MAX_AVATAR_BYTES,
     MAX_CAPABILITIES,
     MAX_CAPABILITY_CHARS,
+    MAX_DISPATCH_EXCLUDE,
+    MAX_DISPATCH_SHOWN,
+    MAX_DISPATCH_SLOTS,
+    MAX_DISPATCH_TEXT_BYTES,
     MAX_JSON_FRAME_BYTES,
     MAX_NOTE_CHARS,
+    MAX_OUTCOME_EVENTS,
     MAX_SEARCH_LIMIT,
     MAX_WATCH_IDS,
     MIN_SUPPORTED_VERSION,
     PROTOCOL_VERSION,
 )
-from clawmeets.hub_protocol.envelope import AgentCert, Envelope
+from clawmeets.hub_protocol.envelope import AgentCert, Envelope, UserPrincipal
 from clawmeets.hub_protocol.http import (
     ErrorDetail,
     ProtocolInfo,
@@ -101,6 +120,7 @@ from clawmeets.hub_protocol.ids import (
     SignatureB64,
     WireModel,
     canonical_hub_url,
+    dispatched_message_id,
 )
 from clawmeets.hub_protocol.keys import HubKeySet
 
@@ -114,6 +134,7 @@ AvatarB64 = Annotated[str, StringConstraints(min_length=1, max_length=-(-MAX_AVA
 
 ROTATE_SIG_FIELDS: tuple[str, ...] = ("sig_old", "sig_new")
 ROUTE_SIG_FIELDS: tuple[str, ...] = ("hub_sig",)
+DISPATCH_STAMP_SIG_FIELDS: tuple[str, ...] = ("hub_sig",)
 
 
 class Frame(WireModel):
@@ -195,6 +216,9 @@ class Listing(WireModel):
     needs_approval: bool
     accepting_messages: bool
     avatar_sha256: Sha256Hex | None = None      # inside listing_sig, so the image cannot be swapped
+    # The owner opted this agent in to hub-dispatched requests. Sent only when
+    # True, so a listing that never opted in keeps its exact signed bytes.
+    accepts_dispatch: bool | None = None
 
 
 class AgentRegister(WireModel):
@@ -522,6 +546,147 @@ class DeliveryReceipt(WireModel):
 
 
 # --------------------------------------------------------------------------
+# Hub-ranked dispatch
+# --------------------------------------------------------------------------
+
+class AgentAddress(WireModel):
+    """An agent on the wire (ids.AgentRef as a payload field)."""
+
+    deployment_fingerprint: Fingerprint
+    agent_name: AgentName
+
+
+class DispatchAsk(WireModel):
+    """One request the hub may route to up to len(slots) agents. Signed by the
+    requester's identity key over the ask minus sig."""
+
+    SIGNING_PURPOSE: ClassVar[Purpose] = Purpose.DISPATCH_ASK
+
+    v: Annotated[int, Field(ge=1)]
+    aud: HubUrl
+    ask_id: MessageId
+    from_deployment: OpaqueId
+    from_fingerprint: Fingerprint
+    from_principal: UserPrincipal
+    text: Annotated[str, StringConstraints(min_length=1)]
+    # The requester_project_ids of the threads the requester will open, one per
+    # agent the hub may pick. Pre-committed so the conversation key stays
+    # "{genesis}/{slot}" and the hub never mints ids in the requester's space.
+    slots: Annotated[list[OpaqueId], Field(min_length=1, max_length=MAX_DISPATCH_SLOTS)]
+    exclude: Annotated[list[AgentAddress], Field(max_length=MAX_DISPATCH_EXCLUDE)]
+    sent_at: EpochFloat
+    expires_at: EpochS
+    sig: SignatureB64 | None = None
+
+    @model_validator(mode="after")
+    def _shape(self) -> "DispatchAsk":
+        if len(self.text.encode("utf-8", "surrogatepass")) > MAX_DISPATCH_TEXT_BYTES:
+            raise ValueError(f"text exceeds {MAX_DISPATCH_TEXT_BYTES} UTF-8 bytes")
+        if len(set(self.slots)) != len(self.slots):
+            raise ValueError("slots must be unique")
+        if not self.sent_at < self.expires_at <= self.sent_at + DISPATCH_TTL_S:
+            raise ValueError(f"expires_at must be after sent_at and at most {DISPATCH_TTL_S}s later")
+        return self
+
+
+class DispatchPick(WireModel):
+    """One agent the hub chose, bound to one of the ask's slots."""
+
+    slot: OpaqueId
+    agent: AgentAddress
+    to_deployment: OpaqueId
+    deployment_name: DeploymentName
+    local: bool                         # the agent is on the asker's own deployment: the hub sends nothing
+    p_fit: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    score: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    rank: Annotated[int, Field(ge=1, le=MAX_DISPATCH_SHOWN)]
+
+
+class DispatchPlan(WireModel):
+    """The hub's answer to a dispatch_ask, sent before any delivery so the
+    requester's threads exist before a reply can arrive."""
+
+    ask_id: MessageId
+    plan_id: OpaqueId
+    picks: Annotated[list[DispatchPick], Field(max_length=MAX_DISPATCH_SLOTS)]
+    answer_yourself: bool               # nobody clearly fits: the requester's own model answers
+    shown: Annotated[list[AgentAddress], Field(max_length=MAX_DISPATCH_SHOWN)]
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "DispatchPlan":
+        if self.answer_yourself and self.picks:
+            raise ValueError("answer_yourself carries no picks")
+        if len({p.slot for p in self.picks}) != len(self.picks):
+            raise ValueError("each pick takes its own slot")
+        return self
+
+
+class DispatchStamp(WireModel):
+    """The hub's word that it routed one slot of one ask to one agent. Signed
+    by the hub key `kid` over dispatch_stamp_signing_payload(stamp, ask.sig)."""
+
+    SIGNING_PURPOSE: ClassVar[Purpose] = Purpose.DISPATCH_STAMP
+    DETACHED_PAYLOAD: ClassVar[bool] = True     # covers the ask's sig: verify with verify_dispatch_stamp
+
+    ask_id: MessageId
+    slot: OpaqueId
+    to_deployment: OpaqueId
+    to_agent: AgentName
+    message_id: MessageId               # ids.dispatched_message_id(ask_id, slot)
+    hub_msg_id: OpaqueId
+    received_at: EpochS
+    kid: OpaqueId
+    hub_sig: SignatureB64 | None = None
+
+
+class DispatchDeliver(WireModel):
+    """Pushed to a picked agent's deployment: the requester's ask verbatim and
+    the hub's stamp naming this agent and slot."""
+
+    ask: DispatchAsk
+    stamp: DispatchStamp
+
+    @model_validator(mode="after")
+    def _stamp_fits_ask(self) -> "DispatchDeliver":
+        if self.stamp.ask_id != self.ask.ask_id:
+            raise ValueError("stamp.ask_id must equal ask.ask_id")
+        if self.stamp.slot not in self.ask.slots:
+            raise ValueError("stamp.slot must be one of ask.slots")
+        if self.stamp.message_id != dispatched_message_id(self.ask.ask_id, self.stamp.slot):
+            raise ValueError("stamp.message_id must be dispatched_message_id(ask_id, slot)")
+        return self
+
+
+class OutcomeEvent(WireModel):
+    slot: OpaqueId | None = None
+    agent: AgentAddress
+    kind: WireCode                      # OutcomeKind
+    at: EpochS
+
+
+class DispatchOutcome(WireModel):
+    """What the requester did with a plan's replies: ids and kinds only, never
+    text. Signed by the requester's identity key over the outcome minus sig."""
+
+    SIGNING_PURPOSE: ClassVar[Purpose] = Purpose.DISPATCH_OUTCOME
+
+    v: Annotated[int, Field(ge=1)]
+    aud: HubUrl
+    ask_id: MessageId
+    plan_id: OpaqueId
+    from_deployment: OpaqueId
+    from_fingerprint: Fingerprint
+    events: Annotated[list[OutcomeEvent], Field(min_length=1, max_length=MAX_OUTCOME_EVENTS)]
+    ts: EpochS
+    sig: SignatureB64 | None = None
+
+
+class DispatchOutcomeAck(WireModel):
+    ask_id: MessageId
+    accepted: Count
+
+
+# --------------------------------------------------------------------------
 # Moderation and errors
 # --------------------------------------------------------------------------
 
@@ -601,6 +766,37 @@ def verify_route(raw: Any, hub_pubkey: bytes) -> bool:
     except (KeyError, TypeError, CanonicalError):
         return False
     return verify_signature(payload, route.get("hub_sig"), hub_pubkey)
+
+
+# The bytes a dispatch stamp's hub_sig covers: canonical({DISPATCH_STAMP tag,
+# stamp minus hub_sig, ask_sig}), which binds the stamp to exactly one ask.
+def dispatch_stamp_signing_payload(stamp: Mapping[str, Any], ask_sig: str) -> bytes:
+    body = {k: v for k, v in stamp.items() if k not in DISPATCH_STAMP_SIG_FIELDS}
+    body["ask_sig"] = ask_sig
+    return tagged_bytes(body, Purpose.DISPATCH_STAMP)
+
+
+# hub_sig for a dispatch stamp, by the hub key named in stamp["kid"].
+def sign_dispatch_stamp(key: Ed25519PrivateKey, stamp: Mapping[str, Any], ask_sig: str) -> str:
+    return b64url(key.sign(dispatch_stamp_signing_payload(stamp, ask_sig)))
+
+
+# Check stamp.hub_sig on a raw dispatch_deliver body against the hub key, over
+# the ask that came with it. The only way to verify a dispatch stamp:
+# verify_then_parse refuses DispatchStamp, since a stamp checked on its own
+# could carry any ask's sig. Never raises.
+def verify_dispatch_stamp(raw: Any, hub_pubkey: bytes) -> bool:
+    try:
+        stamp, ask = raw["stamp"], raw["ask"]
+        if not isinstance(stamp, Mapping) or not isinstance(ask, Mapping):
+            return False
+        ask_sig = ask["sig"]
+        if not isinstance(ask_sig, str):
+            return False
+        payload = dispatch_stamp_signing_payload(stamp, ask_sig)
+    except (KeyError, TypeError, CanonicalError):
+        return False
+    return verify_signature(payload, stamp.get("hub_sig"), hub_pubkey)
 
 
 # Check both signatures of a raw key_rotate: sig_old by old_pubkey, sig_new by
@@ -704,6 +900,8 @@ FRAME_TYPES: Mapping[str, FrameSpec] = {
     "key_rotate": FrameSpec(KeyRotate, "dep_to_hub"),
     "revoke": FrameSpec(RevokeBody, "dep_to_hub"),
     "report": FrameSpec(Report, "dep_to_hub"),
+    "dispatch_ask": FrameSpec(DispatchAsk, "dep_to_hub"),
+    "dispatch_outcome": FrameSpec(DispatchOutcome, "dep_to_hub"),
     # hub -> deployment
     "hello": FrameSpec(Hello, "hub_to_dep"),
     "welcome": FrameSpec(Welcome, "hub_to_dep"),
@@ -726,6 +924,9 @@ FRAME_TYPES: Mapping[str, FrameSpec] = {
     "key_rotated": FrameSpec(KeyRotated, "hub_to_dep"),
     "revoked": FrameSpec(RevokedResponse, "hub_to_dep"),
     "report_ack": FrameSpec(ReportAck, "hub_to_dep"),
+    "dispatch_plan": FrameSpec(DispatchPlan, "hub_to_dep"),        # reply to dispatch_ask
+    "dispatch_deliver": FrameSpec(DispatchDeliver, "hub_to_dep"),  # pushed to each picked host
+    "dispatch_outcome_ack": FrameSpec(DispatchOutcomeAck, "hub_to_dep"),
     "error": FrameSpec(ErrorFrame, "hub_to_dep"),
 }
 

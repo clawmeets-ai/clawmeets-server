@@ -6,10 +6,10 @@ import { useAutoResizeTextarea } from '../../hooks/useAutoResizeTextarea'
 import ProgressBoard from './ProgressBoard'
 import { requestPath } from './agentView'
 import { RequestHeader } from './RequestRoom'
-import { COPY, DEFAULT_SEND, EXAMPLES } from './requestCopy'
+import { askErrorMessage, COPY, DEFAULT_SEND, EXAMPLES } from './requestCopy'
 
 /** "What do you need done?": one box, example chips, and how it works.
- *  Sending ranks and dispatches on the server; the room opens with the
+ *  Sending asks the hub, which ranks and dispatches; the room opens with the
  *  ranked list already in hand. */
 export default function RequestHome() {
   const [text, setText] = useState('')
@@ -26,7 +26,7 @@ export default function RequestHome() {
     })
   }
 
-  // The server ranks and sends in one call: the room's header and board
+  // The hub ranks and the server sends in one call: the room's header and board
   // stand in for it, searching, until the matches arrive in one batch.
   if (create.isPending) {
     return (
@@ -79,7 +79,8 @@ export default function RequestHome() {
           </button>
         </div>
       </div>
-      {create.isError && <p className="pr-error" role="alert">{(create.error as Error).message}</p>}
+      <p className="pr-disclosure" data-testid="request-disclosure">{COPY.disclosure}</p>
+      {create.isError && <p className="pr-error" role="alert" data-testid="ask-error">{askErrorMessage(create.error)}</p>}
       <div className="pr-examples">
         {EXAMPLES.map((ex) => (
           <button key={ex} type="button" onClick={() => { setText(ex); ref.current?.focus() }}>{ex}</button>

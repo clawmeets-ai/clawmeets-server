@@ -106,6 +106,7 @@ from clawmeets.hub_protocol.frames import (
     Auth,
     DeliverAck,
     DeliveryProbe,
+    DispatchPlan,
     FrameError,
     ParsedFrame,
     make_frame,
@@ -134,6 +135,28 @@ HANDSHAKE_SKEW_S = 300.0
 HELLO_TIMEOUT_S = 10.0
 WELCOME_TIMEOUT_S = 10.0
 REQUEST_TIMEOUT_S = 10.0
+#: How long a requester waits for the hub's dispatch plan before giving up.
+DISPATCH_ASK_TIMEOUT_S = 10.0
+#: A receipt for a message with no row yet is held this long, at most this
+#: many at once. A hub-dispatched request's receipt can beat its thread: the
+#: hub answers with the plan, then delivers, while the requester is still
+#: pinning each pick's key before it writes the row.
+EARLY_RECEIPT_TTL_S = 60.0
+MAX_EARLY_RECEIPTS = 256
+
+
+class DispatchUnavailable(Exception):
+    """The hub did not answer a dispatch_ask with a plan: ``code`` is its
+    error code (``ranking_unavailable``, ``rate_limited`` with
+    ``retry_after`` when the hub gave one, ``unsupported`` from a hub that
+    predates the frame, ...) or ``hub_unreachable`` / ``timeout`` /
+    ``bad_reply``. Nothing ranks a public request but the hub, so the caller
+    reports the failure."""
+
+    def __init__(self, code: str, *, retry_after: Optional[float] = None) -> None:
+        super().__init__(code)
+        self.code = code
+        self.retry_after = retry_after
 BACKOFF_FIRST_S = 1.0
 BACKOFF_MAX_S = 60.0
 #: A connection that stayed up this long resets the backoff.
@@ -284,6 +307,8 @@ class HubClient:
         self._session_identity: Optional[HubIdentity] = None
         #: Receipts waiting for a key_lookup of their signer.
         self._lookups: set[asyncio.Future] = set()
+        #: Receipts that arrived before their row: message_id -> (held at, data).
+        self._early_receipts: dict[str, tuple[float, dict]] = {}
         self.link: HubLink = "unreachable"
         self.link_reason: Optional[str] = None
         #: The last close code the hub sent, if any.
@@ -659,6 +684,42 @@ class HubClient:
         finally:
             self._pending.pop(frame_id, None)
 
+    async def ask(self, ask: Mapping[str, Any], *, timeout: float = DISPATCH_ASK_TIMEOUT_S) -> DispatchPlan:
+        """Send a signed DispatchAsk and return the hub's plan.
+        DispatchUnavailable for anything else (see its docstring)."""
+        try:
+            reply = await self.request("dispatch_ask", ask, timeout=timeout)
+        except asyncio.TimeoutError:
+            raise DispatchUnavailable("timeout") from None
+        except (ConnectionError, ConnectionClosed):
+            raise DispatchUnavailable("hub_unreachable") from None
+        if reply.frame.type == "error":
+            retry_after = reply.data.get("retry_after")
+            raise DispatchUnavailable(
+                str(reply.data.get("code") or "error"),
+                retry_after=float(retry_after) if isinstance(retry_after, (int, float)) else None,
+            )
+        if reply.frame.type != "dispatch_plan" or not isinstance(reply.model, DispatchPlan):
+            raise DispatchUnavailable("bad_reply")
+        if reply.model.ask_id != ask.get("ask_id"):
+            raise DispatchUnavailable("bad_reply")
+        return reply.model
+
+    async def report_outcome(self, outcome: Mapping[str, Any], *, timeout: float = REQUEST_TIMEOUT_S) -> int:
+        """Send a signed DispatchOutcome; the number of events the hub took.
+        DispatchUnavailable when it did not acknowledge."""
+        try:
+            reply = await self.request("dispatch_outcome", outcome, timeout=timeout)
+        except asyncio.TimeoutError:
+            raise DispatchUnavailable("timeout") from None
+        except (ConnectionError, ConnectionClosed):
+            raise DispatchUnavailable("hub_unreachable") from None
+        if reply.frame.type == "error":
+            raise DispatchUnavailable(str(reply.data.get("code") or "error"))
+        if reply.frame.type != "dispatch_outcome_ack":
+            raise DispatchUnavailable("bad_reply")
+        return int(reply.data.get("accepted") or 0)
+
     # ── RelayingAdapter ──────────────────────────────────────────────────
 
     async def relay(
@@ -746,7 +807,7 @@ class HubClient:
             self._unacked_heartbeats = 0
         elif kind == "delivery_receipt":
             await self._receipt(data)
-        elif kind in ("deliver", "deliver_probe"):
+        elif kind in ("deliver", "deliver_probe", "dispatch_deliver"):
             if self._on_deliver is not None:
                 await self._on_deliver(parsed)          # the runtime routes it, by mode
             elif self.mode != "full":
@@ -779,7 +840,10 @@ class HubClient:
         message_id = data.get("message_id")
         row = self.hub.hub_row_for_message(message_id) if isinstance(message_id, str) else None
         if row is None or not isinstance(raw_ack, Mapping):
-            logger.info("Hub receipt for no row here: dropped")
+            if isinstance(message_id, str) and isinstance(raw_ack, Mapping):
+                self._hold_early_receipt(message_id, data)
+            else:
+                logger.info("Hub receipt for no row here: dropped")
             return
         target_genesis = row.conversation_key.split("/", 1)[0]
         signer = str(raw_ack.get("from_fingerprint", ""))
@@ -805,6 +869,25 @@ class HubClient:
             logger.warning("Hub receipt names another deployment or hub: dropped")
             return
         await self.gateway.complete_on_receipt(row.connection_id, ack)
+
+    def _hold_early_receipt(self, message_id: str, data: Mapping[str, Any]) -> None:
+        """Keep a receipt with no row for EARLY_RECEIPT_TTL_S (oldest dropped
+        past MAX_EARLY_RECEIPTS); replay_early_receipt places it once its row
+        exists. Nothing is trusted here: the replay runs every check."""
+        now = self._clock()
+        for key in [k for k, (at, _) in self._early_receipts.items() if now - at > EARLY_RECEIPT_TTL_S]:
+            del self._early_receipts[key]
+        while len(self._early_receipts) >= MAX_EARLY_RECEIPTS:
+            del self._early_receipts[next(iter(self._early_receipts))]
+        self._early_receipts[message_id] = (now, dict(data))
+        logger.info("Hub receipt for no row yet: held for %ss", int(EARLY_RECEIPT_TTL_S))
+
+    async def replay_early_receipt(self, message_id: str) -> None:
+        """A row for ``message_id`` was just written: run a receipt that
+        arrived before it, if one is held and still fresh."""
+        held = self._early_receipts.pop(message_id, None)
+        if held is not None and self._clock() - held[0] <= EARLY_RECEIPT_TTL_S:
+            await self._receipt(held[1])
 
     async def _receipt_after_lookup(self, data: Mapping[str, Any], target_genesis: str, signer: str) -> None:
         from .keys import ChainUnverified, look_up_and_pin

@@ -22,7 +22,7 @@ from typing import Any, Mapping, Optional
 from pydantic import ValidationError
 
 from clawmeets.hub_protocol.canonical import CanonicalError, Purpose, signing_payload, verify_signature, verify_then_parse
-from clawmeets.hub_protocol.frames import Hello, verify_route
+from clawmeets.hub_protocol.frames import Hello, verify_dispatch_stamp, verify_route
 from clawmeets.hub_protocol.http import Statement
 from clawmeets.hub_protocol.keys import (
     KEY_SET_SIG_FIELDS,
@@ -180,3 +180,14 @@ def verify_deliver_route(data: Any, *, hub: HubStore, config: HubConfig, now: fl
     if key is None or kid in _revoked(config) or not key.valid_at(int(now)):
         return False
     return verify_route(data, key.pub)
+
+
+# A dispatch_deliver frame's stamp, as received: hub_sig by a trusted kid valid
+# at now, over the stamp bound to the ask it came with. Never raises.
+def verify_dispatch_deliver_stamp(data: Any, *, hub: HubStore, config: HubConfig, now: float) -> bool:
+    stamp = data.get("stamp") if isinstance(data, Mapping) else None
+    kid = stamp.get("kid") if isinstance(stamp, Mapping) else None
+    key = hub.trusted_keys(config.hub_url).get(kid) if isinstance(kid, str) else None
+    if key is None or kid in _revoked(config) or not key.valid_at(int(now)):
+        return False
+    return verify_dispatch_stamp(data, key.pub)

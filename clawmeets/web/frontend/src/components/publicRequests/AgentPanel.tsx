@@ -20,15 +20,15 @@ const UC = 'user-communication'
  * the agent's first message on the request's thread; it is another account's
  * text, so it renders as untrusted Markdown.
  */
-export default function AgentPanel({ match, onOpenAgent, onSend, sending, onDismiss }: {
+export default function AgentPanel({ match, onOpenAgent, onDismiss, onUse, using }: {
   match: RequestMatch
   onOpenAgent: () => void
-  onSend: () => void
-  sending: boolean
   onDismiss: (dismissed: boolean) => void
+  /** "Use this answer": what the hub's ranking learns from. */
+  onUse?: () => void
+  using?: boolean
 }) {
   const a = fromMatch(match)
-  const terms = useMemo(() => [...new Set(Object.values(match.why).flat())], [match.why])
   return (
     <section className="pr-panel" data-testid="agent-panel">
       <div className="pr-card">
@@ -42,6 +42,15 @@ export default function AgentPanel({ match, onOpenAgent, onSend, sending, onDism
           </div>
           <div className="pr-cacts">
             <MatchRetainButton agent={a} />
+            {match.status === 'responded' && !match.dismissed && onUse && (
+              match.used ? (
+                <span className="pr-used" data-testid="used-answer">{COPY.usedAnswer}</span>
+              ) : (
+                <button type="button" className="pr-btn pri" onClick={onUse} disabled={using} data-testid="use-answer">
+                  {COPY.useAnswer}
+                </button>
+              )
+            )}
             {match.status === 'responded' && !match.dismissed && (
               <button type="button" className="pr-btn ghost" onClick={() => onDismiss(true)} data-testid="dismiss">
                 {COPY.dismiss}
@@ -50,10 +59,9 @@ export default function AgentPanel({ match, onOpenAgent, onSend, sending, onDism
           </div>
         </div>
         {a.description && <p className="pr-cdesc">{a.description}</p>}
-        <div className="pr-cmeta">
-          {!!a.retained_count && <span>{COPY.retainedBy(a.retained_count)}</span>}
-          {terms.length > 0 && <span>{COPY.matchesLabel} <b>{terms.join(', ')}</b></span>}
-        </div>
+        {!!a.retained_count && (
+          <div className="pr-cmeta"><span>{COPY.retainedBy(a.retained_count)}</span></div>
+        )}
         {a.expertise.length > 0 && (
           <div className="pr-tags">{a.expertise.map((e) => <span key={e}>{e}</span>)}</div>
         )}
@@ -71,12 +79,8 @@ export default function AgentPanel({ match, onOpenAgent, onSend, sending, onDism
         <Conversation match={match} name={a.display_name} />
       ) : (
         <div className="pr-ans">
-          <div className="pr-notice">
+          <div className="pr-notice" data-testid="not-sent">
             <p>{match.send_error ? COPY.sendFailed : COPY.notSentBody(a.display_name)}</p>
-            <button type="button" className="pr-btn pri" onClick={onSend} disabled={sending} data-testid="send-to-agent">
-              <Send size={14} />
-              {COPY.sendMine}
-            </button>
           </div>
         </div>
       )}

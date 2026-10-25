@@ -170,7 +170,7 @@ from clawmeets.sync.changelog import make_contact_id
 from . import access
 from .email_address import outbound_message_id
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 #: Refused webhook calls stop being counted here; the card shows "1,000+".
 MAX_UNVERIFIED_CALLS = 1000
@@ -220,6 +220,10 @@ _ADDED_COLUMNS = {
                     # bound to one workroom and one stand-in.
                     "kind": "TEXT NOT NULL DEFAULT 'dm'", "bound_project_id": "TEXT",
                     "bound_room": "TEXT"},
+    # Hub-ranked dispatch (version 9): the owner opted this agent in to
+    # requests the hub routes to it, under its own daily cap.
+    "hub_channels": {"accept_dispatch": "INTEGER NOT NULL DEFAULT 0",
+                     "dispatch_daily_cap": "INTEGER NOT NULL DEFAULT 20"},
 }
 #: Indexes on added columns: run after ``_ADDED_COLUMNS``, once the columns exist.
 _POST_COLUMN_SCHEMA = """
@@ -241,6 +245,9 @@ _MIGRATIONS = {
     6: (),
     # Version 7 -> 8 is additive: hub_owners in _SCHEMA.
     7: (),
+    # Version 8 -> 9 is additive: two hub_channels columns in _ADDED_COLUMNS and
+    # hub_dispatch_counts in _SCHEMA.
+    8: (),
 }
 
 # Outbox states. ``sent``, ``failed``, ``expired``, ``held_paused`` and
@@ -704,6 +711,12 @@ CREATE TABLE IF NOT EXISTS hub_channels (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     CHECK ((cert IS NULL) = (cert_purpose IS NULL))
+);
+CREATE TABLE IF NOT EXISTS hub_dispatch_counts (
+    agent_id TEXT NOT NULL,            -- hub-dispatched asks accepted for this agent
+    day TEXT NOT NULL,                 -- local date, YYYY-MM-DD
+    count INTEGER NOT NULL CHECK (count >= 0),
+    PRIMARY KEY (agent_id, day)
 );
 CREATE TABLE IF NOT EXISTS hub_directory_cache (
     kind TEXT NOT NULL CHECK (kind IN ('search', 'agent')),
@@ -3212,6 +3225,24 @@ def new_thread_slug(connection_id: str) -> str:
     return f"ch-{connection_id[:8]}-{uuid.uuid4().hex[:8]}"
 
 
+def rollback_schema_v9(data_dir: Path) -> bool:
+    """Take ``channels.db`` back from version 9 to 8, with the server stopped.
+    True if it did. Version 9 only added two ``hub_channels`` columns and
+    ``hub_dispatch_counts``, which version-8 code never reads: nothing is
+    dropped, only the version changes."""
+    path = data_dir / "channels" / "channels.db"
+    if not path.exists():
+        return False
+    db = sqlite3.connect(path, isolation_level=None)
+    try:
+        if db.execute("PRAGMA user_version").fetchone()[0] != 9:
+            return False
+        db.execute("PRAGMA user_version = 8")
+        return True
+    finally:
+        db.close()
+
+
 def rollback_schema_v8(data_dir: Path) -> bool:
     """Take ``channels.db`` back from version 8 to 7, with the server stopped.
     True if it did. Version 8 only added ``hub_owners``, which version-7 code
@@ -3264,7 +3295,7 @@ def rollback_schema_v6(data_dir: Path) -> bool:
         return False
     db = sqlite3.connect(path, isolation_level=None)
     try:
-        if db.execute("PRAGMA user_version").fetchone()[0] not in (6, 7, 8):
+        if db.execute("PRAGMA user_version").fetchone()[0] not in (6, 7, 8, 9):
             return False
         db.execute("PRAGMA user_version = 5")
         return True
@@ -3293,7 +3324,7 @@ def rollback_schema_v5(data_dir: Path, *, now: float) -> int:
         return 0
     db = sqlite3.connect(path, isolation_level=None)
     try:
-        if db.execute("PRAGMA user_version").fetchone()[0] not in (5, 6, 7, 8):
+        if db.execute("PRAGMA user_version").fetchone()[0] not in (5, 6, 7, 8, 9):
             return 0
         db.execute("BEGIN IMMEDIATE")
         try:

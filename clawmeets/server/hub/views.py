@@ -245,7 +245,7 @@ def channel_out(
     config: "HubConfig", reg: Optional["HubRegistration"], *, link: str, agent: "Agent",
     state: Optional["HubChannelState"], open_conversations: int, in_flight_messages: int,
     next_midnight: float, now: float, isolation: str = "unavailable", held_conversations: int = 0,
-    local_conversations: int = 0,
+    local_conversations: int = 0, dispatched_today: int = 0,
 ) -> HubChannel:
     """An agent's Hub channel, as its owner's card shows it (masked: the
     only key material is ``key_last4``)."""
@@ -273,6 +273,9 @@ def channel_out(
         runs_reset_at=next_midnight if fresh_day else state.runs_reset_at,
         isolation=isolation, held_conversations=held_conversations,
         local_conversations=local_conversations, owner_isolated=agent.owner_isolated,
+        accept_dispatch=bool(state is not None and state.accept_dispatch),
+        dispatch_daily_cap=state.dispatch_daily_cap if state is not None else 20,
+        dispatched_today=dispatched_today,
     )
 
 

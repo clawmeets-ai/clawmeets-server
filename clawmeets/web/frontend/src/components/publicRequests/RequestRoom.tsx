@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import type { PublicRequest, RequestMatch } from '../../api/endpoints/publicRequests'
 import { useRetainedAgents } from '../../hooks/useAgentAccess'
-import { useSendPublicRequest, useSetMatchDismissed } from '../../hooks/usePublicRequests'
+import { useMarkAnswerUsed, useSendPublicRequest, useSetMatchDismissed } from '../../hooks/usePublicRequests'
 import AgentPanel from './AgentPanel'
 import AgentRankList from './AgentRankList'
 import ProgressBoard from './ProgressBoard'
-import { COPY, DEFAULT_SEND, formatWhen, isSent } from './requestCopy'
+import { askErrorMessage, COPY, DEFAULT_SEND, formatWhen, isSent } from './requestCopy'
 
 /** Until the user picks, the panel shows the first agent to respond, else
  *  the best-ranked one the request went to. Rank order never changes. */
@@ -23,7 +24,7 @@ function typingInField(target: EventTarget | null): boolean {
   return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
 }
 
-/** The request header and progress board, alone while the server ranks. */
+/** The request header and progress board, alone while the hub ranks. */
 export function RequestHeader({ text, createdAt, children }: { text: string; createdAt: number | null; children: React.ReactNode }) {
   return (
     <>
@@ -52,6 +53,7 @@ export default function RequestRoom({ request, onOpenAgent, drawerOpen }: {
   )
   const send = useSendPublicRequest(request.id)
   const dismiss = useSetMatchDismissed(request.id)
+  const markUsed = useMarkAnswerUsed(request.id)
 
   const step = (delta: number) => {
     if (!matches.length) return
@@ -79,8 +81,24 @@ export default function RequestRoom({ request, onOpenAgent, drawerOpen }: {
           sent={request.sent}
           working={working}
           responded={request.responded}
+          assistantAnswered={!!request.answer_yourself}
         />
       </RequestHeader>
+      {request.answer_yourself && (
+        <div className="pr-notice pr-assistant" data-testid="assistant-answered">
+          <p>{COPY.assistantAnswered}</p>
+          {request.fallback_project_id && request.fallback_agent_name && (
+            <Link
+              className="pr-btn pri"
+              to={`/dm/${encodeURIComponent(request.fallback_agent_name)}/${request.fallback_project_id}`}
+              data-testid="open-assistant"
+            >
+              {COPY.openAssistant}
+            </Link>
+          )}
+        </div>
+      )}
+      {send.isError && <p className="pr-error" role="alert" data-testid="ask-error">{askErrorMessage(send.error)}</p>}
       {match && (
         <>
           <div className="pr-switchhead">
@@ -107,16 +125,16 @@ export default function RequestRoom({ request, onOpenAgent, drawerOpen }: {
               activeRef={match.agent_ref}
               retained={retained}
               onSelect={setPick}
-              onLoadMore={() => send.mutate({ count: DEFAULT_SEND })}
-              loadingMore={send.isPending}
+              onAskMore={() => send.mutate({ count: DEFAULT_SEND })}
+              askingMore={send.isPending}
             />
             <AgentPanel
               key={match.agent_ref}
               match={match}
               onOpenAgent={() => onOpenAgent(match.agent_ref)}
-              onSend={() => send.mutate({ agent_refs: [match.agent_ref] })}
-              sending={send.isPending}
               onDismiss={(dismissed) => dismiss.mutate({ agentRef: match.agent_ref, dismissed })}
+              onUse={() => markUsed.mutate(match.agent_ref)}
+              using={markUsed.isPending}
             />
           </div>
         </>

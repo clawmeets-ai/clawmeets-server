@@ -5,15 +5,17 @@ import { COPY } from './requestCopy'
 type StepState = 'pending' | 'on' | 'done'
 
 /**
- * Finding agents → Working → Responses. While the server ranks, the board
+ * Finding agents → Working → Responses. While the hub ranks, the board
  * shows the searching block; the matches then arrive in one batch.
  */
-export default function ProgressBoard({ searching, matched, sent, working, responded }: {
+export default function ProgressBoard({ searching, matched, sent, working, responded, assistantAnswered = false }: {
   searching: boolean
   matched: number
   sent: number
   working: number
   responded: number
+  /** No agent clearly fit and the user's assistant got it: not "no match". */
+  assistantAnswered?: boolean
 }) {
   const s = COPY.steps
   const steps: { name: string; sub: string; state: StepState }[] = [
@@ -68,7 +70,7 @@ export default function ProgressBoard({ searching, matched, sent, working, respo
           </div>
         </div>
       )}
-      {!searching && matched === 0 && <div className="pr-empty">{COPY.noMatches}</div>}
+      {!searching && matched === 0 && !assistantAnswered && <div className="pr-empty">{COPY.noMatches}</div>}
     </div>
   )
 }

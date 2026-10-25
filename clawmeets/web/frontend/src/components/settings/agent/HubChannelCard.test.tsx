@@ -108,7 +108,8 @@ describe('HubChannelCard: one render per status', () => {
     expect(status().textContent).toContain('Last contact 2 min ago · Key ····9f2c')
     expect(status().textContent).toContain('Runs started by hub messages today: 37 / 200 (read-only)')
     expect(toggle().getAttribute('aria-checked')).toBe('true')
-    expect(screen.queryByRole('spinbutton')).toBeNull()
+    // The run cap is read-only; the one number input is the dispatch cap.
+    expect(screen.queryAllByRole('spinbutton').map((el) => el.id)).toEqual(['hub-dispatch-cap'])
   })
 
   it('connected at the daily cap: the chip and when it resets', async () => {
