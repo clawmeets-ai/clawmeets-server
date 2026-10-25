@@ -520,6 +520,8 @@ others_running() {
 
 closing() {
     say "Set up $ACCOUNT on $SERVER."
+    say "Skills, plugins and MCP servers you add to a model CLI on this computer (Claude Code, Codex, Gemini, ...)"
+    say "are available to every agent that runs on that CLI. Agents on an API-key model provider do not see them."
     _default=$(cat "$DATA_DIR/config/current_user" 2>/dev/null || true)
     if [ "$_default" = "$ACCOUNT" ]; then
         say "This computer's default account is $ACCOUNT."

@@ -41,6 +41,7 @@
   },
   {
     "name": "gmail",
+    "non_production_only": true,
     "summary": "Read, search, send, and archive Gmail messages.",
     "description": "Read, search, send, and archive Gmail messages via `clawmeets gmail {search,get,labels,attachment,send,archive,auth,revoke}` Bash subcommands. Archive removes the INBOX label (reversible with `archive --undo`; nothing is deleted). These commands only fetch and act — where fetched mail is stored, how it is deduplicated, and how incremental fetches are tracked is up to the agent's SOP. Requires Google OAuth — Authenticate via Agent Settings → Skills → gmail before first use. Token resolves from `$CLAWMEETS_AGENT_DIR/skill-hub/state/gmail/`.",
     "tags": ["google", "email", "communication"],
@@ -70,6 +71,7 @@
   },
   {
     "name": "google-calendar",
+    "non_production_only": true,
     "summary": "List and manage Google Calendar events.",
     "description": "Google Calendar (list / get / create / update / delete) via `clawmeets gcal {calendars,list-events,get,create,update,delete,auth,revoke}` Bash subcommands. These commands only fetch and act — where fetched events are stored, how they are deduplicated, and how incremental fetches are tracked is up to the agent's SOP. Requires Google OAuth — Authenticate via Agent Settings → Skills → google-calendar. Token resolves from `$CLAWMEETS_AGENT_DIR/skill-hub/state/google-calendar/`.",
     "tags": ["google", "calendar", "scheduling"],
@@ -83,6 +85,7 @@
   },
   {
     "name": "google-drive",
+    "non_production_only": true,
     "summary": "Search and read Google Drive files and Sheets (read-only).",
     "description": "Google Drive read-only (search / read) via `clawmeets gdrive {search,get,auth,revoke}` Bash subcommands. Google Docs / Slides export as text, Sheets as first-tab TSV. These commands only fetch — where fetched files are stored, how they are deduplicated, and how incremental fetches are tracked is up to the agent's SOP. Requires Google OAuth (drive.readonly).",
     "tags": ["google", "drive", "documents", "data"],
@@ -96,6 +99,7 @@
   },
   {
     "name": "google-drive-write",
+    "non_production_only": true,
     "summary": "Read and write rows in specific Google Sheets.",
     "description": "Google Sheets read+write (per-target) via `clawmeets gdrive-write {read-rows,append-rows,update-cell,auth}`. Each named target binds one spreadsheet's tab + id-column. Separate from `google-drive` so the sheets-write OAuth scope is opt-in. No sync trigger — used inline by content-engine pipelines (e.g. marketing template's instagram agent: read brief → generate image → write back).",
     "tags": ["google", "sheets", "marketing", "write"],

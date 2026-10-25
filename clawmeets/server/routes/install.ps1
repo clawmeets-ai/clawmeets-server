@@ -332,6 +332,8 @@ function Get-OthersRunning([string]$Account) {
 
 function Write-Closing([string]$Account, [string]$PrevDefault) {
     Say "Set up $Account on $Server."
+    Say 'Skills, plugins and MCP servers you add to a model CLI on this computer (Claude Code, Codex, Gemini, ...)'
+    Say 'are available to every agent that runs on that CLI. Agents on an API-key model provider do not see them.'
     $default = Get-Content (Join-Path (Join-Path $DataDir 'config') 'current_user') -TotalCount 1 -ErrorAction SilentlyContinue
     if ($default -eq $Account) {
         Say "This computer's default account is $Account."

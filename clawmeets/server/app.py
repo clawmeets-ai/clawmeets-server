@@ -57,7 +57,7 @@ from .chat_search_index import ChatSearchIndex, ChatSearchIndexSubscriber
 from clawmeets.utils.notification_center import NotificationCenter
 from clawmeets.sync.runloop_manager import ChangelogRunloopManager
 from .context import ServerContext
-from .config import cors_allow_origins
+from .config import cors_allow_origins, is_production
 from .routes.agents import create_agents_router
 from .routes.public_agents import create_public_agents_router
 from .routes.agent_env import create_agent_env_router
@@ -448,7 +448,7 @@ def create_app(
     # Create skill registry (if skills_dir provided)
     skill_registry: SkillRegistry | None = None
     if skills_dir and skills_dir.exists():
-        skill_registry = SkillRegistry(skills_dir)
+        skill_registry = SkillRegistry(skills_dir, production=is_production())
         logger.info(f"Skill registry loaded from {skills_dir}")
 
     # Create MCP registry (if mcps_dir provided)

@@ -41,6 +41,9 @@ class SkillMeta(BaseModel):
     version: str = "1.0.0"
     attribution: str | None = None
     auth: SkillAuthMeta | None = None
+    # Offered only on non-production deployments (``server/config.is_production``):
+    # the skill is absent from the catalog there, as if registry.json lacked it.
+    non_production_only: bool = False
 
 
 class SkillRegistry:
@@ -56,9 +59,13 @@ class SkillRegistry:
             └── SKILL.md
     """
 
-    def __init__(self, skills_dir: Path) -> None:
+    def __init__(self, skills_dir: Path, *, production: bool = False) -> None:
         self._skills_dir = skills_dir
+        self._production = production
         self._skills: dict[str, SkillMeta] = {}
+        # Names registry.json lists but this deployment does not offer, so a
+        # batch install can skip them instead of failing as unknown.
+        self._withheld: set[str] = set()
         self.reload()
 
     def reload(self) -> None:
@@ -71,10 +78,22 @@ class SkillRegistry:
 
         raw = json.loads(registry_path.read_text())
         self._skills = {}
+        self._withheld = set()
         for entry in raw:
             meta = SkillMeta.model_validate(entry)
+            if self._production and meta.non_production_only:
+                self._withheld.add(meta.name)
+                continue
             self._skills[meta.name] = meta
-        logger.info(f"Loaded {len(self._skills)} skills from registry")
+        logger.info(
+            f"Loaded {len(self._skills)} skills from registry"
+            + (f" (withheld in production: {', '.join(sorted(self._withheld))})" if self._withheld else "")
+        )
+
+    def is_withheld(self, name: str) -> bool:
+        """True for a skill registry.json lists but this deployment does not
+        offer (``non_production_only`` on a production server)."""
+        return name in self._withheld
 
     def list_skills(self, query: Optional[str] = None) -> list[SkillMeta]:
         """List all skills, optionally filtered by search query."""

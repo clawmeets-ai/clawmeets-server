@@ -144,7 +144,11 @@ def create_skills_router(ctx: "ServerContext", skill_registry: "SkillRegistry") 
         if agent is None:
             raise HTTPException(404, f"Agent {agent_id!r} not found")
 
-        # Validate all requested skills exist
+        # Skills this deployment withholds (non-production-only on production)
+        # are skipped, not refused, so an agent-pool install that lists one
+        # still gets the rest. Any other unknown name fails the request.
+        withheld = [s for s in skills if skill_registry.is_withheld(s)]
+        skills = [s for s in skills if s not in withheld]
         for skill_name in skills:
             if skill_registry.get_skill(skill_name) is None:
                 raise HTTPException(404, f"Skill {skill_name!r} not found in registry")
@@ -153,7 +157,7 @@ def create_skills_router(ctx: "ServerContext", skill_registry: "SkillRegistry") 
             installed = _read_installed_skills(agent_id)
             new_skills = [s for s in skills if s not in installed]
             if not new_skills:
-                return {"installed_skills": installed, "added": []}
+                return {"installed_skills": installed, "added": [], "skipped": withheld}
             installed.extend(new_skills)
             _write_installed_skills(agent_id, installed)
 
@@ -180,7 +184,7 @@ def create_skills_router(ctx: "ServerContext", skill_registry: "SkillRegistry") 
             if await ctx.ws_hub.send_to(agent_id, envelope):
                 logger.info(f"Sent SKILL_SYNC(install) for {skill_name} to agent {agent.name}")
 
-        return {"installed_skills": installed, "added": new_skills}
+        return {"installed_skills": installed, "added": new_skills, "skipped": withheld}
 
     @router.post("/agents/{agent_id}/skills/{skill_name}/reauth")
     async def reauth_skill(

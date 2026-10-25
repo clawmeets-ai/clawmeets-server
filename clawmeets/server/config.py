@@ -59,3 +59,23 @@ def public_app_url() -> str:
         if value:
             return value
     return ""
+
+
+NON_PRODUCTION_ENVIRONMENTS = frozenset({"development", "dev", "staging", "test"})
+
+
+def deployment_environment() -> str:
+    """Which deployment this server is: ``CLAWMEETS_ENVIRONMENT``, lowercased.
+
+    Unset or empty means ``"production"``. Fail closed on purpose: whatever is
+    held back from production (``is_production``) must stay held back on a box
+    whose operator forgot this line. Dev and staging set it explicitly
+    (``development`` / ``staging``).
+    """
+    return (os.environ.get("CLAWMEETS_ENVIRONMENT") or "").strip().lower() or "production"
+
+
+def is_production() -> bool:
+    """True unless ``CLAWMEETS_ENVIRONMENT`` names a non-production deployment
+    (``NON_PRODUCTION_ENVIRONMENTS``). An unrecognised value counts as production."""
+    return deployment_environment() not in NON_PRODUCTION_ENVIRONMENTS
